@@ -62,7 +62,7 @@ body { display: flex; flex-direction: column; }
 .workspace { flex: 1; display: flex; min-height: 0; }
 
 .canvas-wrap { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #fff; }
-#canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+#canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 #canvas.grabbing { cursor: grabbing; }
 #canvas.movable { cursor: move; }
 
@@ -93,7 +93,10 @@ body { display: flex; flex-direction: column; }
 .sidebar-header {
   padding: 12px 14px; font-weight: 600; font-size: 14px;
   border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px;
 }
+/* Grab handle + chevron are only shown on the mobile bottom sheet. */
+.sheet-handle, .sheet-chevron { display: none; }
 .prop-content { padding: 14px; overflow-y: auto; }
 .hint { color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0; }
 
@@ -115,3 +118,63 @@ body { display: flex; flex-direction: column; }
 .actions { display: flex; gap: 8px; margin-top: 6px; }
 .actions .btn { flex: 1; }
 .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 18px 0 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+
+/* Mobile / narrow screens -------------------------------------------------- */
+@media (max-width: 720px) {
+  :root { --toolbar-h: auto; }
+
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 8px 10px;
+  }
+  .toolbar-group { gap: 6px; }
+  .toolbar-group.grow { flex-basis: 100%; justify-content: flex-start; order: 3; }
+  .brand { font-size: 14px; }
+  .btn { padding: 8px 10px; font-size: 13px; } /* larger touch targets */
+  .filename { max-width: none; }
+
+  /* Canvas fills the screen; the sidebar becomes a bottom sheet. */
+  .workspace { flex-direction: column; position: relative; }
+  .canvas-wrap { flex: 1 1 auto; }
+
+  .sidebar {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    flex: none;
+    width: 100%;
+    max-height: 70vh;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -6px 24px rgba(0,0,0,.16);
+    transform: translateY(calc(100% - 46px)); /* only the header peeks up */
+    transition: transform .22s ease;
+    z-index: 20;
+  }
+  .sidebar.open { transform: translateY(0); }
+
+  .sidebar-header {
+    position: relative;
+    justify-content: center;
+    padding: 14px 14px 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .sheet-handle {
+    display: block;
+    position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+    width: 36px; height: 4px; border-radius: 2px; background: var(--border);
+  }
+  .sheet-chevron {
+    display: block; margin-left: auto;
+    width: 9px; height: 9px;
+    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+    transform: rotate(-135deg); /* points up when collapsed */
+    transition: transform .22s ease;
+  }
+  .sidebar.open .sheet-chevron { transform: rotate(45deg); } /* points down */
+
+  .prop-content { max-height: calc(70vh - 46px); }
+  .coords { bottom: 52px; } /* clear of the collapsed sheet header */
+}

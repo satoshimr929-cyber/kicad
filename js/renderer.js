@@ -207,11 +207,14 @@
 
   // --- hit testing ----------------------------------------------------------
 
-  Renderer.prototype.symbolAt = function (worldX, worldY) {
+  // `tol` expands each bbox by that many mm — handy for imprecise touch taps.
+  Renderer.prototype.symbolAt = function (worldX, worldY, tol) {
+    tol = tol || 0;
     const symbols = this.schem.symbols();
     for (let i = symbols.length - 1; i >= 0; i--) {
       const b = this.symbolBBox(symbols[i]);
-      if (worldX >= b.minX && worldX <= b.maxX && worldY >= b.minY && worldY <= b.maxY) {
+      if (worldX >= b.minX - tol && worldX <= b.maxX + tol &&
+          worldY >= b.minY - tol && worldY <= b.maxY + tol) {
         return symbols[i];
       }
     }

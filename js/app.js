@@ -23,7 +23,14 @@
     coords: document.getElementById('coords'),
     canvasWrap: document.getElementById('canvasWrap'),
     propContent: document.getElementById('propContent'),
+    sidebar: document.getElementById('sidebar'),
+    sidebarHeader: document.getElementById('sidebarHeader'),
   };
+
+  // On mobile the sidebar header acts as a drag handle to expand/collapse.
+  els.sidebarHeader.addEventListener('click', function () {
+    els.sidebar.classList.toggle('open');
+  });
 
   const state = {
     schem: null,
@@ -145,31 +152,59 @@
     zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.12 : 0.893);
   }, { passive: false });
 
-  // --- pointer interaction (pan / select / move) ----------------------------
+  // --- pointer interaction (pan / select / move / pinch) --------------------
+  //
+  // Pointer Events unify mouse, touch and pen. Interaction model:
+  //   mouse/pen : dragging a symbol moves it; dragging empty space pans.
+  //   touch     : a single finger always pans; a tap selects; only the
+  //               already-selected symbol can be dragged to move it.
+  //   two touch : pinch to zoom.
 
-  const drag = { mode: null, startX: 0, startY: 0, panX0: 0, panY0: 0, moved: false, symStart: null };
+  const drag = {
+    mode: null, startX: 0, startY: 0, panX0: 0, panY0: 0,
+    moved: false, symStart: null, pointerType: 'mouse', tapSym: null,
+  };
+  const pointers = new Map(); // pointerId -> {x, y} in client coordinates
+  let pinch = null;           // last pinch state while two pointers are active
 
   function eventWorld(e) {
     const rect = canvas.getBoundingClientRect();
     return renderer.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
   }
 
-  canvas.addEventListener('mousedown', function (e) {
-    if (!state.schem || e.button !== 0) return;
+  canvas.addEventListener('pointerdown', function (e) {
+    if (!state.schem) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (pointers.size === 2) {
+      // Second finger down: abandon any pan/move and start a pinch.
+      drag.mode = null;
+      canvas.classList.remove('grabbing', 'movable');
+      pinch = pinchState();
+      return;
+    }
+    if (pointers.size !== 1) return;
+
     const w = eventWorld(e);
-    const sym = renderer.symbolAt(w.x, w.y);
+    const touch = e.pointerType === 'touch';
+    const tol = touch ? 6 / renderer.view.scale : 0; // ~6px finger tolerance
+    const sym = renderer.symbolAt(w.x, w.y, tol);
     drag.startX = e.clientX;
     drag.startY = e.clientY;
     drag.moved = false;
+    drag.pointerType = e.pointerType;
+    drag.tapSym = sym;
 
-    if (sym) {
-      selectSymbol(sym);
+    const canMove = touch ? (sym && sym === state.selected) : !!sym;
+    if (canMove) {
+      if (!touch) selectSymbol(sym);
       drag.mode = 'move';
       const pl = state.schem.placement(sym);
       drag.symStart = { x: pl.x, y: pl.y, worldX: w.x, worldY: w.y };
       canvas.classList.add('movable');
     } else {
-      if (state.selected) selectSymbol(null);
       drag.mode = 'pan';
       drag.panX0 = renderer.view.panX;
       drag.panY0 = renderer.view.panY;
@@ -177,12 +212,21 @@
     }
   });
 
-  window.addEventListener('mousemove', function (e) {
+  canvas.addEventListener('pointermove', function (e) {
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.schem) {
       const w = eventWorld(e);
       els.coords.textContent = w.x.toFixed(2) + ', ' + w.y.toFixed(2) + ' mm';
     }
+
+    if (pinch && pointers.size >= 2) {
+      const now = pinchState();
+      if (pinch.dist > 0 && now.dist > 0) zoomAt(now.cx, now.cy, now.dist / pinch.dist);
+      pinch = now;
+      return;
+    }
     if (!drag.mode) return;
+
     const dxScreen = e.clientX - drag.startX;
     const dyScreen = e.clientY - drag.startY;
     if (Math.abs(dxScreen) + Math.abs(dyScreen) > 3) drag.moved = true;
@@ -199,11 +243,40 @@
     }
   });
 
-  window.addEventListener('mouseup', function () {
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (canvas.hasPointerCapture && canvas.hasPointerCapture(e.pointerId)) {
+      canvas.releasePointerCapture(e.pointerId);
+    }
+    if (pointers.size < 2) pinch = null;
+
     if (drag.mode === 'move' && drag.moved) { setDirty(true); syncPropInputs(); }
-    drag.mode = null;
-    canvas.classList.remove('grabbing', 'movable');
-  });
+
+    if (drag.mode && !drag.moved) {
+      // A tap/click that did not drag: toggle selection.
+      if (drag.tapSym) selectSymbol(drag.tapSym);
+      else if (state.selected) selectSymbol(null);
+    }
+
+    if (pointers.size === 0) {
+      drag.mode = null;
+      canvas.classList.remove('grabbing', 'movable');
+    }
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+
+  // Current distance and midpoint (in canvas-local coords) of two pointers.
+  function pinchState() {
+    const pts = Array.from(pointers.values());
+    const rect = canvas.getBoundingClientRect();
+    const dx = pts[0].x - pts[1].x, dy = pts[0].y - pts[1].y;
+    return {
+      dist: Math.hypot(dx, dy),
+      cx: (pts[0].x + pts[1].x) / 2 - rect.left,
+      cy: (pts[0].y + pts[1].y) / 2 - rect.top,
+    };
+  }
 
   // --- symbol mutations -----------------------------------------------------
 
@@ -247,6 +320,9 @@
     renderer.selected = sym;
     renderer.render();
     renderProps();
+    // On mobile the sidebar is a bottom sheet: open it when a symbol is
+    // selected, collapse it back to the summary bar when nothing is selected.
+    els.sidebar.classList.toggle('open', !!sym);
   }
 
   function renderProps() {
@@ -371,11 +447,16 @@
 
   // --- misc -----------------------------------------------------------------
 
-  window.addEventListener('resize', function () { if (state.schem) renderer.render(); });
+  function onViewportChange() { if (state.schem) renderer.render(); }
+  window.addEventListener('resize', onViewportChange);
+  window.addEventListener('orientationchange', onViewportChange);
   window.addEventListener('beforeunload', function (e) {
     if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // Initial paint so the canvas sizes correctly.
   renderer.render();
+
+  // Minimal hook for automated tests / debugging (read-only view state).
+  window.__kicad = { view: renderer.view, isSelected: function () { return !!state.selected; } };
 })();
