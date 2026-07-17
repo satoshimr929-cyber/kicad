@@ -98,6 +98,16 @@ select.btn { padding: 6px 8px; }
   transition: background .12s, border-color .12s;
 }
 .part-item:hover { background: #eef2ff; border-color: var(--accent); }
+.part-item.filtered-out { display: none; }
+
+.part-search-wrap { padding: 10px 14px 0; }
+.part-search-wrap input {
+  width: 100%; padding: 8px 10px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text);
+}
+.part-search-wrap input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37,99,235,.15); }
+.part-list.empty-note { display: block; }
+.part-list .no-match { grid-column: 1 / -1; text-align: center; color: var(--muted); font-size: 13px; padding: 20px 0; }
 
 .field-modal-hint { padding: 0 14px; margin: 10px 0; line-height: 1.6; }
 .field-list {

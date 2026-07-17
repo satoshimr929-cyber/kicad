@@ -96,6 +96,7 @@
   const partList = document.getElementById('partList');
   const partBtn = document.getElementById('partBtn');
   const partClose = document.getElementById('partClose');
+  const partSearch = document.getElementById('partSearch');
   const symImport = document.getElementById('symImport');
 
   // Extra library defs imported from user .kicad_sym files (libId -> {def,...}).
@@ -108,17 +109,45 @@
       div.className = 'part-item';
       div.textContent = meta.label || libId;
       div.title = libId;
+      div.dataset.search = (meta.label || '') + ' ' + libId;
       div.addEventListener('click', function () { choosePart(libId); });
       partList.appendChild(div);
     }
     window.KiParts.ORDER.forEach(function (id) { addItem(id, window.KiParts.PARTS[id]); });
     Object.keys(importedParts).forEach(function (id) { addItem(id, importedParts[id]); });
+    applyPartFilter();
   }
+
+  // Show/hide part-item cards by whether their label/libId contains the query
+  // (case-insensitive); an empty query shows everything.
+  function applyPartFilter() {
+    const q = partSearch.value.trim().toLowerCase();
+    let visible = 0;
+    Array.prototype.forEach.call(partList.querySelectorAll('.part-item'), function (el) {
+      const match = !q || el.dataset.search.toLowerCase().indexOf(q) >= 0;
+      el.classList.toggle('filtered-out', !match);
+      if (match) visible++;
+    });
+    let note = partList.querySelector('.no-match');
+    if (visible === 0) {
+      if (!note) {
+        note = document.createElement('div');
+        note.className = 'no-match';
+        note.textContent = '一致する部品がありません。';
+        partList.appendChild(note);
+      }
+    } else if (note) {
+      note.remove();
+    }
+  }
+  partSearch.addEventListener('input', applyPartFilter);
 
   function openPartModal() {
     if (!state.schem) { alert('先にファイルを開くかサンプルを読み込んでください。'); return; }
+    partSearch.value = '';
     buildPartList();
     partModal.hidden = false;
+    partSearch.focus();
   }
   function closePartModal() { partModal.hidden = true; }
 
