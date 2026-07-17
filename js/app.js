@@ -40,6 +40,7 @@
     dirty: false,
     sel: [],                    // array of {kind, node}
     tool: 'select',             // active placement tool
+    placePart: null,            // libId when the 'part' tool is active
   };
 
   // In-progress wire/bus drawing: `last` is the fixed end of the next segment.
@@ -57,6 +58,9 @@
     toolButtons.forEach(function (b) {
       b.classList.toggle('active', b.dataset.tool === tool);
     });
+    if (tool !== 'part') state.placePart = null;
+    const pb = document.getElementById('partBtn');
+    if (pb) pb.classList.toggle('active', tool === 'part');
     canvas.classList.toggle('crosshair', tool !== 'select');
   }
 
@@ -70,6 +74,87 @@
     b.addEventListener('click', function () { setTool(b.dataset.tool); });
   });
   powerSel.addEventListener('change', function () { setTool('power'); });
+
+  // --- part chooser ---------------------------------------------------------
+
+  const partModal = document.getElementById('partModal');
+  const partList = document.getElementById('partList');
+  const partBtn = document.getElementById('partBtn');
+  const partClose = document.getElementById('partClose');
+  const symImport = document.getElementById('symImport');
+
+  // Extra library defs imported from user .kicad_sym files (libId -> {def,...}).
+  const importedParts = {};
+
+  function buildPartList() {
+    partList.innerHTML = '';
+    function addItem(libId, meta) {
+      const div = document.createElement('div');
+      div.className = 'part-item';
+      div.textContent = meta.label || libId;
+      div.title = libId;
+      div.addEventListener('click', function () { choosePart(libId); });
+      partList.appendChild(div);
+    }
+    window.KiParts.ORDER.forEach(function (id) { addItem(id, window.KiParts.PARTS[id]); });
+    Object.keys(importedParts).forEach(function (id) { addItem(id, importedParts[id]); });
+  }
+
+  function openPartModal() {
+    if (!state.schem) { alert('先にファイルを開くかサンプルを読み込んでください。'); return; }
+    buildPartList();
+    partModal.hidden = false;
+  }
+  function closePartModal() { partModal.hidden = true; }
+
+  partBtn.addEventListener('click', openPartModal);
+  partClose.addEventListener('click', closePartModal);
+  partModal.addEventListener('click', function (e) { if (e.target === partModal) closePartModal(); });
+
+  function choosePart(libId) {
+    state.placePart = libId;
+    closePartModal();
+    setTool('part');
+  }
+
+  // Import a .kicad_sym file: register every (symbol "...") it defines.
+  symImport.addEventListener('change', function () {
+    const file = symImport.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      let root;
+      try { root = S.parse(reader.result); } catch (err) {
+        alert('.kicad_sym の解析に失敗しました: ' + err.message); return;
+      }
+      const syms = M.childLists(root, 'symbol');
+      if (!syms.length) { alert('シンボルが見つかりませんでした。'); return; }
+      let count = 0;
+      syms.forEach(function (sn) {
+        const name = sn.children[1] ? sn.children[1].value : null;
+        if (!name || name.indexOf(':') < 0) return; // skip child unit symbols
+        importedParts[name] = {
+          def: S.serialize(sn, 0),
+          value: name.split(':')[1],
+          ref: guessRefPrefix(sn),
+          label: name.split(':')[1] + ' (取込)',
+        };
+        count++;
+      });
+      alert(count + ' 個のシンボルを取り込みました。');
+      buildPartList();
+    };
+    reader.readAsText(file);
+    symImport.value = '';
+  });
+
+  function guessRefPrefix(symNode) {
+    const ref = M.childLists(symNode, 'property').find(function (p) {
+      return p.children[1] && p.children[1].value === 'Reference';
+    });
+    const v = ref && ref.children[2] ? ref.children[2].value : 'U';
+    return v.replace(/[^A-Za-z].*$/, '') || 'U';
+  }
 
   const WIRE_KINDS = ['wire', 'bus', 'polyline'];
   const LABEL_KINDS = ['label', 'global_label', 'hierarchical_label'];
@@ -620,6 +705,9 @@
       case 'power':
         placePower(powerSel.value, w.x, w.y);
         return;
+      case 'part':
+        if (state.placePart) placeComponent(state.placePart, w.x, w.y);
+        return;
     }
   }
 
@@ -713,6 +801,52 @@
       '  (property "Value" "' + name + '" (at ' + f(x) + ' ' + f(y + meta.valueDy) + ' 0)\n' +
       '    (effects (font (size 1.27 1.27))))\n' +
       '  (pin "1" (uuid "' + uuid() + '"))\n' +
+      ')'));
+    renderer.invalidate();
+    finishPlacement({ kind: 'symbol', node: node });
+  }
+
+  // Next free reference "<prefix><n>" for a component of the given prefix.
+  function nextRef(prefix) {
+    let max = 0;
+    const re = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\d+)$');
+    state.schem.symbols().forEach(function (sym) {
+      state.schem.properties(sym).forEach(function (p) {
+        if (p.key !== 'Reference') return;
+        const m = re.exec(p.value);
+        if (m) max = Math.max(max, parseInt(m[1], 10));
+      });
+    });
+    return prefix + (max + 1);
+  }
+
+  function placeComponent(libId, x, y) {
+    const meta = (window.KiParts.PARTS[libId]) || importedParts[libId];
+    if (!meta) return;
+    window.KiLibrary.ensureLibDef(state.schem, libId, meta.def);
+    const lib = state.schem.libSymbols[libId];
+    // Emit an instance pin entry for every unique pin number in the lib symbol.
+    const seen = {};
+    let pinsSexpr = '';
+    if (lib) {
+      lib.bodies.forEach(function (bd) {
+        bd.pins.forEach(function (pin) {
+          if (pin.number == null || seen[pin.number]) return;
+          seen[pin.number] = true;
+          pinsSexpr += '  (pin "' + pin.number + '" (uuid "' + uuid() + '"))\n';
+        });
+      });
+    }
+    const ref = nextRef(meta.ref);
+    const node = addTop(S.parse(
+      '(symbol (lib_id "' + libId + '") (at ' + f(x) + ' ' + f(y) + ' 0) (unit 1)\n' +
+      '  (in_bom yes) (on_board yes) (dnp no)\n' +
+      '  (uuid "' + uuid() + '")\n' +
+      '  (property "Reference" "' + ref + '" (at ' + f(x + 3.81) + ' ' + f(y - 1.27) + ' 0)\n' +
+      '    (effects (font (size 1.27 1.27)) (justify left)))\n' +
+      '  (property "Value" "' + meta.value + '" (at ' + f(x + 3.81) + ' ' + f(y + 1.27) + ' 0)\n' +
+      '    (effects (font (size 1.27 1.27)) (justify left)))\n' +
+      pinsSexpr +
       ')'));
     renderer.invalidate();
     finishPlacement({ kind: 'symbol', node: node });
@@ -972,6 +1106,8 @@
   // Minimal hook for automated tests / debugging.
   window.__kicad = {
     view: renderer.view,
+    tool: function () { return state.tool; },
+    placePart: function () { return state.placePart; },
     selCount: function () { return state.sel.length; },
     selKind: function () { return state.sel.length ? state.sel[0].kind : null; },
     text: function () { return state.schem ? serializeNow() : ''; },

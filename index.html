@@ -35,6 +35,7 @@
 
   <div class="toolbar tools" id="toolsBar">
     <button class="btn tool active" data-tool="select">選択</button>
+    <button class="btn" id="partBtn">部品を配置…</button>
     <button class="btn tool" data-tool="wire">配線</button>
     <button class="btn tool" data-tool="bus">バス</button>
     <button class="btn tool" data-tool="label">ラベル</button>
@@ -76,10 +77,25 @@
     </aside>
   </main>
 
+  <div id="partModal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>部品を選択</span>
+        <button id="partClose" class="btn">✕</button>
+      </div>
+      <div id="partList" class="part-list"></div>
+      <div class="modal-foot">
+        <label class="btn" for="symImport">.kicad_sym を取り込む…</label>
+        <input id="symImport" type="file" accept=".kicad_sym" hidden>
+      </div>
+    </div>
+  </div>
+
   <script src="js/sexpr.js"></script>
   <script src="js/model.js"></script>
   <script src="js/history.js"></script>
   <script src="js/library.js"></script>
+  <script src="js/parts.js"></script>
   <script src="js/hershey.js"></script>
   <script src="js/strokefont.js"></script>
   <script src="js/renderer.js"></script>

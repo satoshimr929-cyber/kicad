@@ -54,31 +54,37 @@
   // Heads that belong to the file header — a created lib_symbols goes after them.
   const META_HEADS = ['version', 'generator', 'generator_version', 'uuid', 'paper', 'title_block'];
 
-  // Make sure `libId` exists in the schematic's lib_symbols; returns its meta.
+  // Inject `defString` into the schematic's lib_symbols under `libId` unless it
+  // is already present, creating the lib_symbols section if the file lacks one.
+  function ensureLibDef(schem, libId, defString) {
+    if (schem.libSymbols[libId]) return;
+    const M = global.KiModel;
+    const node = global.SExpr.parse(defString);
+    let lib = M.firstChild(schem.root, 'lib_symbols');
+    if (!lib) {
+      lib = { kind: 'list', children: [{ kind: 'atom', value: 'lib_symbols', quoted: false }] };
+      let idx = schem.root.children.length;
+      for (let i = 1; i < schem.root.children.length; i++) {
+        const h = M.head(schem.root.children[i]);
+        if (h && META_HEADS.indexOf(h) < 0) { idx = i; break; }
+      }
+      schem.root.children.splice(idx, 0, lib);
+    }
+    lib.children.push(node);
+    schem.registerLibSymbol(node);
+  }
+
+  // Make sure a built-in power symbol exists; returns its placement meta.
   function ensurePower(schem, libId) {
     const meta = POWER[libId];
     if (!meta) return null;
-    if (!schem.libSymbols[libId]) {
-      const M = global.KiModel;
-      const node = global.SExpr.parse(meta.def);
-      let lib = M.firstChild(schem.root, 'lib_symbols');
-      if (!lib) {
-        lib = { kind: 'list', children: [{ kind: 'atom', value: 'lib_symbols', quoted: false }] };
-        let idx = schem.root.children.length;
-        for (let i = 1; i < schem.root.children.length; i++) {
-          const h = M.head(schem.root.children[i]);
-          if (h && META_HEADS.indexOf(h) < 0) { idx = i; break; }
-        }
-        schem.root.children.splice(idx, 0, lib);
-      }
-      lib.children.push(node);
-      schem.registerLibSymbol(node);
-    }
+    ensureLibDef(schem, libId, meta.def);
     return meta;
   }
 
   global.KiLibrary = {
     POWER: POWER,
     ensurePower: ensurePower,
+    ensureLibDef: ensureLibDef,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

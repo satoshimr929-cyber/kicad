@@ -71,6 +71,34 @@ body { display: flex; flex-direction: column; }
 select.btn { padding: 6px 8px; }
 #canvas.crosshair { cursor: crosshair; }
 
+/* Part chooser modal */
+.modal {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.35);
+}
+.modal[hidden] { display: none; }
+.modal-box {
+  background: var(--panel); border-radius: 12px; width: min(520px, 92vw);
+  max-height: 80vh; display: flex; flex-direction: column;
+  box-shadow: 0 12px 48px rgba(0,0,0,.3); overflow: hidden;
+}
+.modal-head, .modal-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600;
+}
+.modal-foot { border-bottom: none; border-top: 1px solid var(--border); }
+.part-list {
+  padding: 10px 14px; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;
+}
+.part-item {
+  padding: 12px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: #fff; cursor: pointer; font-size: 13px; text-align: center;
+  transition: background .12s, border-color .12s;
+}
+.part-item:hover { background: #eef2ff; border-color: var(--accent); }
+
 /* Workspace ---------------------------------------------------------------- */
 .workspace { flex: 1; display: flex; min-height: 0; }
 
