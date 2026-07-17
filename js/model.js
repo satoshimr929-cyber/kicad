@@ -69,9 +69,47 @@
     if (!at) return;
     at.children[1] = atomNode(fmt(x));
     at.children[2] = atomNode(fmt(y));
-    if (typeof angle === 'number') {
+    // Only touch the angle slot if the list already has one, or a non-zero
+    // angle is requested — junction/no_connect `(at x y)` lists must stay 2-arg.
+    if (typeof angle === 'number' && (at.children[3] !== undefined || angle !== 0)) {
       at.children[3] = atomNode(fmt(angle));
     }
+  }
+
+  // Overwrite the coordinates inside a `(pts (xy ...) ...)` list.
+  function writePts(node, pts) {
+    const ptsNode = firstChild(node, 'pts');
+    if (!ptsNode) return;
+    const xys = childLists(ptsNode, 'xy');
+    for (let i = 0; i < xys.length && i < pts.length; i++) {
+      xys[i].children[1] = atomNode(fmt(pts[i].x));
+      xys[i].children[2] = atomNode(fmt(pts[i].y));
+    }
+  }
+
+  function removeChild(parent, node) {
+    const i = parent.children.indexOf(node);
+    if (i >= 0) parent.children.splice(i, 1);
+    return i >= 0;
+  }
+
+  // First value argument of e.g. (label "TEXT" ...) / (text "TEXT" ...).
+  function setText(node, value) {
+    node.children[1] = atomNode(value, true);
+  }
+
+  // Set, change or clear a symbol instance's (mirror x|y). axis null removes it.
+  function setMirror(symbolNode, axis) {
+    let m = firstChild(symbolNode, 'mirror');
+    if (!axis) {
+      if (m) removeChild(symbolNode, m);
+      return;
+    }
+    if (m) { m.children[1] = atomNode(axis); return; }
+    m = { kind: 'list', children: [atomNode('mirror'), atomNode(axis)] };
+    const at = firstChild(symbolNode, 'at');
+    const idx = at ? symbolNode.children.indexOf(at) : -1;
+    symbolNode.children.splice(idx >= 0 ? idx + 1 : symbolNode.children.length, 0, m);
   }
 
   // Read `(pts (xy x y) ...)` into [{x, y}, ...].
@@ -288,6 +326,10 @@
     readAt: readAt,
     writeAt: writeAt,
     readPts: readPts,
+    writePts: writePts,
+    removeChild: removeChild,
+    setText: setText,
+    setMirror: setMirror,
     Schematic: Schematic,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -18,6 +18,10 @@
       <button id="saveBtn" class="btn" disabled>保存 (.kicad_sch)</button>
     </div>
     <div class="toolbar-group">
+      <button id="undoBtn" class="btn" disabled title="元に戻す (Ctrl+Z)">↩ 元に戻す</button>
+      <button id="redoBtn" class="btn" disabled title="やり直す (Ctrl+Y)">↪ やり直す</button>
+    </div>
+    <div class="toolbar-group">
       <button id="fitBtn" class="btn" disabled>全体表示</button>
       <button id="zoomInBtn" class="btn" disabled>＋</button>
       <button id="zoomOutBtn" class="btn" disabled>－</button>
@@ -55,6 +59,7 @@
 
   <script src="js/sexpr.js"></script>
   <script src="js/model.js"></script>
+  <script src="js/history.js"></script>
   <script src="js/hershey.js"></script>
   <script src="js/strokefont.js"></script>
   <script src="js/renderer.js"></script>

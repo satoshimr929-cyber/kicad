@@ -41,7 +41,8 @@
     this.ctx = canvas.getContext('2d');
     this.schem = null;
     this.view = { scale: 4, panX: 0, panY: 0 }; // scale = px per mm
-    this.selected = null;
+    this.selection = [];   // array of {kind, node}
+    this.rubber = null;    // {x0,y0,x1,y1} in world mm while band-selecting
     this.bboxCache = new WeakMap();
     this.showGrid = true;
   }
@@ -259,7 +260,13 @@
     this.schem.items('text').forEach(function (t) { self.drawText(t); });
     this.schem.items('sheet').forEach(function (sh) { self.drawSheet(sh); });
 
-    if (this.selected) this.drawSelection(this.selected);
+    if (this.selection && this.selection.length) {
+      for (let i = 0; i < this.selection.length; i++) {
+        const it = this.selection[i];
+        this.drawSelectionBox(this.itemBBox(it.kind, it.node));
+      }
+    }
+    if (this.rubber) this.drawRubber();
   };
 
   Renderer.prototype.drawGrid = function (rect) {
@@ -591,8 +598,8 @@
     });
   };
 
-  Renderer.prototype.drawSelection = function (symbolNode) {
-    const b = this.symbolBBox(symbolNode);
+  Renderer.prototype.drawSelectionBox = function (b) {
+    if (!b) return;
     const ctx = this.ctx;
     const tl = this.worldToScreen(b.minX, b.minY);
     const br = this.worldToScreen(b.maxX, b.maxY);
@@ -602,6 +609,116 @@
     ctx.setLineDash([5, 3]);
     ctx.strokeRect(tl.x - pad, tl.y - pad, (br.x - tl.x) + pad * 2, (br.y - tl.y) + pad * 2);
     ctx.setLineDash([]);
+  };
+
+  Renderer.prototype.drawRubber = function () {
+    const r = this.rubber;
+    const ctx = this.ctx;
+    const a = this.worldToScreen(Math.min(r.x0, r.x1), Math.min(r.y0, r.y1));
+    const b = this.worldToScreen(Math.max(r.x0, r.x1), Math.max(r.y0, r.y1));
+    ctx.fillStyle = 'rgba(37, 99, 235, 0.08)';
+    ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.setLineDash([]);
+  };
+
+  // --- generic item hit-testing & bounds ------------------------------------
+
+  function distToSeg(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+
+  // Bounding box (world mm) for any selectable item kind.
+  Renderer.prototype.itemBBox = function (kind, node) {
+    if (kind === 'symbol') return this.symbolBBox(node);
+    if (kind === 'wire' || kind === 'bus' || kind === 'polyline') {
+      const pts = M.readPts(node);
+      if (!pts.length) return null;
+      const b = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      pts.forEach(function (p) { growBox(b, p.x, p.y); });
+      b.minX -= 0.3; b.minY -= 0.3; b.maxX += 0.3; b.maxY += 0.3;
+      return b;
+    }
+    const at = M.readAt(node);
+    if (!at) return null;
+    if (kind === 'junction' || kind === 'no_connect') {
+      return { minX: at.x - 1, minY: at.y - 1, maxX: at.x + 1, maxY: at.y + 1 };
+    }
+    // Labels and free text: approximate box from stroke-font metrics + justify.
+    const text = node.children[1] ? node.children[1].value : '';
+    const size = fieldSize(node);
+    const w = (global.StrokeFont ? global.StrokeFont.widthMm(text, size) : text.length * size) + size;
+    const h = size * 1.8;
+    const j = parseJustify(node);
+    const hj = j.h || 'left';
+    let x0, x1;
+    if (hj === 'center') { x0 = -w / 2; x1 = w / 2; }
+    else if (hj === 'right') { x0 = -w; x1 = 0; }
+    else { x0 = 0; x1 = w; }
+    if (at.angle === 90 || at.angle === 270) {
+      // Rotated CCW: local +x runs upward on the sheet.
+      return { minX: at.x - h / 2, minY: at.y - x1, maxX: at.x + h / 2, maxY: at.y - x0 };
+    }
+    return { minX: at.x + x0, minY: at.y - h / 2, maxX: at.x + x1, maxY: at.y + h / 2 };
+  };
+
+  // Topmost item of any kind at a world point. Small point-like items win,
+  // then text, then symbols, then wires.
+  Renderer.prototype.itemAt = function (wx, wy, tol) {
+    tol = tol || 0.5;
+    const s = this.schem;
+    if (!s) return null;
+    const self = this;
+
+    let hit = null;
+    ['junction', 'no_connect'].some(function (k) {
+      return s.items(k).some(function (n) {
+        const at = M.readAt(n);
+        if (at && Math.hypot(wx - at.x, wy - at.y) <= Math.max(tol, 1)) {
+          hit = { kind: k, node: n };
+          return true;
+        }
+        return false;
+      });
+    });
+    if (hit) return hit;
+
+    ['label', 'global_label', 'hierarchical_label', 'text'].some(function (k) {
+      return s.items(k).some(function (n) {
+        const b = self.itemBBox(k, n);
+        if (b && wx >= b.minX - tol && wx <= b.maxX + tol &&
+            wy >= b.minY - tol && wy <= b.maxY + tol) {
+          hit = { kind: k, node: n };
+          return true;
+        }
+        return false;
+      });
+    });
+    if (hit) return hit;
+
+    const sym = this.symbolAt(wx, wy, tol);
+    if (sym) return { kind: 'symbol', node: sym };
+
+    ['wire', 'bus', 'polyline'].some(function (k) {
+      return s.items(k).some(function (n) {
+        const pts = M.readPts(n);
+        for (let i = 0; i + 1 < pts.length; i++) {
+          if (distToSeg(wx, wy, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y) <= Math.max(tol, 0.4)) {
+            hit = { kind: k, node: n };
+            return true;
+          }
+        }
+        return false;
+      });
+    });
+    return hit;
   };
 
   Renderer.COLORS = COLORS;

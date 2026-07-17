@@ -1,4 +1,4 @@
-// app.js — UI wiring: file I/O, pan/zoom, selection, move, property editing.
+// app.js — UI wiring: file I/O, pan/zoom, selection, editing tools, history.
 
 (function () {
   'use strict';
@@ -13,6 +13,8 @@
     fileInput: document.getElementById('fileInput'),
     sampleBtn: document.getElementById('sampleBtn'),
     saveBtn: document.getElementById('saveBtn'),
+    undoBtn: document.getElementById('undoBtn'),
+    redoBtn: document.getElementById('redoBtn'),
     fitBtn: document.getElementById('fitBtn'),
     zoomInBtn: document.getElementById('zoomInBtn'),
     zoomOutBtn: document.getElementById('zoomOutBtn'),
@@ -36,11 +38,49 @@
     schem: null,
     filename: 'schematic.kicad_sch',
     dirty: false,
-    selected: null,
+    sel: [],                    // array of {kind, node}
   };
 
-  const GRID = 1.27; // mm — snap resolution while moving symbols
+  const WIRE_KINDS = ['wire', 'bus', 'polyline'];
+  const LABEL_KINDS = ['label', 'global_label', 'hierarchical_label'];
+  function isWireKind(k) { return WIRE_KINDS.indexOf(k) >= 0; }
+  function isLabelKind(k) { return LABEL_KINDS.indexOf(k) >= 0; }
+
+  const GRID = 1.27; // mm — snap resolution while moving items
   function snap(v) { return Math.round(v / GRID) * GRID; }
+
+  // --- history --------------------------------------------------------------
+
+  const history = new window.KiHistory();
+
+  function serializeNow() { return S.serializeDocument(state.schem.root); }
+
+  // Call after any completed mutation: snapshots the tree for undo.
+  function commitHistory() {
+    if (!state.schem) return;
+    if (history.commit(serializeNow())) setDirty(true);
+    updateHistoryButtons();
+  }
+
+  function updateHistoryButtons() {
+    els.undoBtn.disabled = !history.canUndo();
+    els.redoBtn.disabled = !history.canRedo();
+  }
+
+  // Restore a history snapshot, keeping the current view (no re-fit).
+  function applyText(text) {
+    state.schem = new M.Schematic(S.parse(text));
+    renderer.setSchematic(state.schem);
+    setDirty(true);
+    updateHistoryButtons();
+    setSelection([]);
+  }
+
+  function undoAction() { const t = history.undo(); if (t) applyText(t); }
+  function redoAction() { const t = history.redo(); if (t) applyText(t); }
+
+  els.undoBtn.addEventListener('click', undoAction);
+  els.redoBtn.addEventListener('click', redoAction);
 
   // --- loading --------------------------------------------------------------
 
@@ -58,10 +98,12 @@
     }
     state.schem = new M.Schematic(root);
     state.filename = filename || 'schematic.kicad_sch';
-    state.selected = null;
-    setDirty(false);
+    state.sel = [];
     renderer.setSchematic(state.schem);
-    renderer.selected = null;
+    renderer.selection = state.sel;
+    setDirty(false);
+    history.init(serializeNow());
+    updateHistoryButtons();
     renderer.fit();
     renderer.render();
 
@@ -104,7 +146,7 @@
 
   els.saveBtn.addEventListener('click', function () {
     if (!state.schem) return;
-    const text = S.serializeDocument(state.schem.root);
+    const text = serializeNow();
     const blob = new Blob([text], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -152,20 +194,22 @@
     zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.12 : 0.893);
   }, { passive: false });
 
-  // --- pointer interaction (pan / select / move / pinch) --------------------
+  // --- pointer interaction (pan / select / move / rubber / pinch) -----------
   //
-  // Pointer Events unify mouse, touch and pen. Interaction model:
-  //   mouse/pen : dragging a symbol moves it; dragging empty space pans.
-  //   touch     : a single finger always pans; a tap selects; only the
-  //               already-selected symbol can be dragged to move it.
+  //   mouse/pen : dragging an item moves it (whole selection if it's part of
+  //               one); dragging empty space pans; Shift+drag = band select;
+  //               Shift+click toggles membership.
+  //   touch     : one finger always pans; a tap selects; dragging an
+  //               already-selected item moves the selection.
   //   two touch : pinch to zoom.
 
   const drag = {
     mode: null, startX: 0, startY: 0, panX0: 0, panY0: 0,
-    moved: false, symStart: null, pointerType: 'mouse', tapSym: null,
+    moved: false, pointerType: 'mouse', tapItem: null,
+    origs: null, startWorld: null, addToSel: false,
   };
-  const pointers = new Map(); // pointerId -> {x, y} in client coordinates
-  let pinch = null;           // last pinch state while two pointers are active
+  const pointers = new Map(); // pointerId -> {x, y} client coords
+  let pinch = null;
 
   function eventWorld(e) {
     const rect = canvas.getBoundingClientRect();
@@ -179,8 +223,8 @@
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (pointers.size === 2) {
-      // Second finger down: abandon any pan/move and start a pinch.
       drag.mode = null;
+      renderer.rubber = null;
       canvas.classList.remove('grabbing', 'movable');
       pinch = pinchState();
       return;
@@ -189,20 +233,33 @@
 
     const w = eventWorld(e);
     const touch = e.pointerType === 'touch';
-    const tol = touch ? 6 / renderer.view.scale : 0; // ~6px finger tolerance
-    const sym = renderer.symbolAt(w.x, w.y, tol);
+    const tol = (touch ? 8 : 4) / renderer.view.scale;
+    const item = renderer.itemAt(w.x, w.y, tol);
+
     drag.startX = e.clientX;
     drag.startY = e.clientY;
     drag.moved = false;
     drag.pointerType = e.pointerType;
-    drag.tapSym = sym;
+    drag.tapItem = item;
+    drag.startWorld = w;
+    drag.addToSel = e.shiftKey;
 
-    const canMove = touch ? (sym && sym === state.selected) : !!sym;
+    if (e.shiftKey && !touch) {
+      if (item) {
+        drag.mode = 'click'; // toggle handled on pointerup
+      } else {
+        drag.mode = 'rubber';
+        renderer.rubber = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+      }
+      return;
+    }
+
+    const inSel = item && isSelected(item.node);
+    const canMove = touch ? inSel : !!item;
     if (canMove) {
-      if (!touch) selectSymbol(sym);
+      if (!touch && !inSel) setSelection([item]);
       drag.mode = 'move';
-      const pl = state.schem.placement(sym);
-      drag.symStart = { x: pl.x, y: pl.y, worldX: w.x, worldY: w.y };
+      drag.origs = captureOrigins();
       canvas.classList.add('movable');
     } else {
       drag.mode = 'pan';
@@ -235,11 +292,16 @@
       renderer.view.panX = drag.panX0 - dxScreen / renderer.view.scale;
       renderer.view.panY = drag.panY0 - dyScreen / renderer.view.scale;
       renderer.render();
-    } else if (drag.mode === 'move' && state.selected) {
+    } else if (drag.mode === 'rubber') {
       const w = eventWorld(e);
-      const nx = snap(drag.symStart.x + (w.x - drag.symStart.worldX));
-      const ny = snap(drag.symStart.y + (w.y - drag.symStart.worldY));
-      moveSymbolTo(state.selected, nx, ny);
+      renderer.rubber.x1 = w.x;
+      renderer.rubber.y1 = w.y;
+      renderer.render();
+    } else if (drag.mode === 'move' && state.sel.length) {
+      const w = eventWorld(e);
+      const dx = snap(w.x - drag.startWorld.x);
+      const dy = snap(w.y - drag.startWorld.y);
+      applyMoveDelta(drag.origs, dx, dy);
     }
   });
 
@@ -250,12 +312,28 @@
     }
     if (pointers.size < 2) pinch = null;
 
-    if (drag.mode === 'move' && drag.moved) { setDirty(true); syncPropInputs(); }
-
-    if (drag.mode && !drag.moved) {
-      // A tap/click that did not drag: toggle selection.
-      if (drag.tapSym) selectSymbol(drag.tapSym);
-      else if (state.selected) selectSymbol(null);
+    if (drag.mode === 'rubber') {
+      const rb = renderer.rubber;
+      renderer.rubber = null;
+      if (drag.moved && rb) {
+        setSelection(itemsInRect({
+          x0: Math.min(rb.x0, rb.x1), x1: Math.max(rb.x0, rb.x1),
+          y0: Math.min(rb.y0, rb.y1), y1: Math.max(rb.y0, rb.y1),
+        }));
+      } else {
+        renderer.render();
+      }
+    } else if (drag.mode === 'move' && drag.moved) {
+      commitHistory();
+      renderProps();
+    } else if (drag.mode && !drag.moved) {
+      // A tap/click that did not drag.
+      if (drag.tapItem) {
+        if (drag.addToSel) toggleSelection(drag.tapItem);
+        else setSelection([drag.tapItem]);
+      } else if (state.sel.length && !drag.addToSel) {
+        setSelection([]);
+      }
     }
 
     if (pointers.size === 0) {
@@ -266,7 +344,6 @@
   canvas.addEventListener('pointerup', endPointer);
   canvas.addEventListener('pointercancel', endPointer);
 
-  // Current distance and midpoint (in canvas-local coords) of two pointers.
   function pinchState() {
     const pts = Array.from(pointers.values());
     const rect = canvas.getBoundingClientRect();
@@ -278,7 +355,72 @@
     };
   }
 
-  // --- symbol mutations -----------------------------------------------------
+  // --- selection ------------------------------------------------------------
+
+  function isSelected(node) {
+    return state.sel.some(function (it) { return it.node === node; });
+  }
+
+  function setSelection(items) {
+    state.sel = items || [];
+    renderer.selection = state.sel;
+    renderer.render();
+    renderProps();
+    els.sidebar.classList.toggle('open', state.sel.length > 0);
+  }
+
+  function toggleSelection(item) {
+    const next = state.sel.slice();
+    const i = next.findIndex(function (it) { return it.node === item.node; });
+    if (i >= 0) next.splice(i, 1); else next.push(item);
+    setSelection(next);
+  }
+
+  function allItems() {
+    const out = state.schem.symbols().map(function (n) { return { kind: 'symbol', node: n }; });
+    WIRE_KINDS.concat(LABEL_KINDS, ['text', 'junction', 'no_connect']).forEach(function (k) {
+      state.schem.items(k).forEach(function (n) { out.push({ kind: k, node: n }); });
+    });
+    return out;
+  }
+
+  function itemsInRect(r) {
+    return allItems().filter(function (it) {
+      const b = renderer.itemBBox(it.kind, it.node);
+      return b && b.maxX >= r.x0 && b.minX <= r.x1 && b.maxY >= r.y0 && b.minY <= r.y1;
+    });
+  }
+
+  // --- mutations ------------------------------------------------------------
+
+  function captureOrigins() {
+    return state.sel.map(function (it) {
+      if (it.kind === 'symbol') {
+        const pl = state.schem.placement(it.node);
+        return { it: it, x: pl.x, y: pl.y };
+      }
+      if (isWireKind(it.kind)) {
+        return { it: it, pts: M.readPts(it.node) };
+      }
+      const at = M.readAt(it.node);
+      return { it: it, x: at ? at.x : 0, y: at ? at.y : 0, angle: at ? at.angle : 0 };
+    });
+  }
+
+  // Move every selected item to (original + snapped delta).
+  function applyMoveDelta(origs, dx, dy) {
+    origs.forEach(function (o) {
+      const k = o.it.kind;
+      if (k === 'symbol') {
+        moveSymbolTo(o.it.node, o.x + dx, o.y + dy);
+      } else if (isWireKind(k)) {
+        M.writePts(o.it.node, o.pts.map(function (p) { return { x: p.x + dx, y: p.y + dy }; }));
+      } else {
+        M.writeAt(o.it.node, o.x + dx, o.y + dy, o.angle);
+      }
+    });
+    renderer.render();
+  }
 
   function moveSymbolTo(symbolNode, nx, ny) {
     const pl = state.schem.placement(symbolNode);
@@ -291,38 +433,97 @@
       if (at) M.writeAt(p, at.x + dx, at.y + dy, at.angle);
     });
     renderer.invalidate(symbolNode);
-    renderer.render();
   }
 
-  function rotateSelected() {
-    if (!state.selected) return;
-    const sym = state.selected;
-    const pl = state.schem.placement(sym);
-    const newAngle = (pl.angle + 90) % 360;
-    M.writeAt(sym, pl.x, pl.y, newAngle);
+  function rotateSymbol(node) {
+    const pl = state.schem.placement(node);
+    const na = (pl.angle + 90) % 360;
+    M.writeAt(node, pl.x, pl.y, na);
     // Rotate field positions 90° about the symbol origin (screen CCW).
-    M.childLists(sym, 'property').forEach(function (p) {
+    M.childLists(node, 'property').forEach(function (p) {
       const at = M.readAt(p);
       if (!at) return;
       const rx = at.x - pl.x, ry = at.y - pl.y;
       M.writeAt(p, pl.x + ry, pl.y - rx, at.angle);
     });
-    renderer.invalidate(sym);
-    renderer.render();
-    setDirty(true);
-    syncPropInputs();
+    renderer.invalidate(node);
   }
 
-  // --- selection & property panel ------------------------------------------
-
-  function selectSymbol(sym) {
-    state.selected = sym;
-    renderer.selected = sym;
+  function rotateSelected() {
+    if (!state.sel.length) return;
+    state.sel.forEach(function (it) {
+      if (it.kind === 'symbol') {
+        rotateSymbol(it.node);
+      } else if (isLabelKind(it.kind) || it.kind === 'text') {
+        const at = M.readAt(it.node);
+        if (at) M.writeAt(it.node, at.x, at.y, (at.angle + 90) % 360);
+      }
+    });
     renderer.render();
+    commitHistory();
     renderProps();
-    // On mobile the sidebar is a bottom sheet: open it when a symbol is
-    // selected, collapse it back to the summary bar when nothing is selected.
-    els.sidebar.classList.toggle('open', !!sym);
+  }
+
+  function mirrorSelected(axis) {
+    let did = false;
+    state.sel.forEach(function (it) {
+      if (it.kind !== 'symbol') return;
+      const pl = state.schem.placement(it.node);
+      M.setMirror(it.node, pl.mirror === axis ? null : axis);
+      renderer.invalidate(it.node);
+      did = true;
+    });
+    if (!did) return;
+    renderer.render();
+    commitHistory();
+    renderProps();
+  }
+
+  function deleteSelected() {
+    if (!state.sel.length) return;
+    state.sel.forEach(function (it) {
+      M.removeChild(state.schem.root, it.node);
+    });
+    renderer.invalidate();
+    setSelection([]);
+    commitHistory();
+  }
+
+  // --- keyboard shortcuts ---------------------------------------------------
+
+  window.addEventListener('keydown', function (e) {
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    const k = e.key;
+    if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'Z')) {
+      e.preventDefault();
+      if (e.shiftKey) redoAction(); else undoAction();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) {
+      e.preventDefault();
+      redoAction();
+      return;
+    }
+    if (!state.schem) return;
+    if (k === 'Escape') { setSelection([]); return; }
+    if (!state.sel.length) return;
+    if (k === 'r' || k === 'R') rotateSelected();
+    else if (k === 'x' || k === 'X') mirrorSelected('x');
+    else if (k === 'y' || k === 'Y') mirrorSelected('y');
+    else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); deleteSelected(); }
+  });
+
+  // --- property panel -------------------------------------------------------
+
+  function kindLabel(kind) {
+    return {
+      wire: '配線', bus: 'バス', polyline: '図形線',
+      label: 'ラベル', global_label: 'グローバルラベル',
+      hierarchical_label: '階層ラベル', text: 'テキスト',
+      junction: 'ジャンクション', no_connect: '未接続マーク',
+      symbol: 'シンボル',
+    }[kind] || kind;
   }
 
   function renderProps() {
@@ -332,89 +533,167 @@
       c.innerHTML = '<p class="hint">ファイルを読み込んでください。</p>';
       return;
     }
-    if (!state.selected) {
-      const counts = summary();
+    if (state.sel.length === 0) {
       c.innerHTML =
-        '<p class="hint">シンボルをクリックして選択すると、プロパティを編集できます。</p>' +
+        '<p class="hint">アイテムをクリック / タップで選択。Shift+ドラッグで範囲選択。<br>' +
+        'R: 回転, X/Y: 反転, Del: 削除, Ctrl+Z: 元に戻す</p>' +
         '<div class="section-label">回路図の内容</div>' +
-        '<div class="prop-sub">' + counts + '</div>';
+        '<div class="prop-sub">' + summary() + '</div>';
       return;
     }
+    if (state.sel.length > 1) {
+      renderMultiProps(c);
+      return;
+    }
+    const it = state.sel[0];
+    if (it.kind === 'symbol') renderSymbolProps(c, it.node);
+    else if (isLabelKind(it.kind) || it.kind === 'text') renderTextProps(c, it);
+    else renderSimpleProps(c, it);
+  }
 
-    const sym = state.selected;
+  function titleRow(c, text, sub) {
+    const t = document.createElement('p');
+    t.className = 'prop-title';
+    t.textContent = text;
+    c.appendChild(t);
+    if (sub) {
+      const s = document.createElement('p');
+      s.className = 'prop-sub';
+      s.textContent = sub;
+      c.appendChild(s);
+    }
+    return t;
+  }
+
+  function actionsRow(c, buttons) {
+    const row = document.createElement('div');
+    row.className = 'actions';
+    buttons.forEach(function (b) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = b[0];
+      btn.addEventListener('click', b[1]);
+      row.appendChild(btn);
+    });
+    c.appendChild(row);
+    return row;
+  }
+
+  function renderMultiProps(c) {
+    titleRow(c, state.sel.length + ' 個のアイテムを選択中');
+    actionsRow(c, [
+      ['90° 回転', rotateSelected],
+      ['削除', deleteSelected],
+    ]);
+    actionsRow(c, [
+      ['選択解除', function () { setSelection([]); }],
+    ]);
+  }
+
+  function renderSymbolProps(c, sym) {
     const pl = state.schem.placement(sym);
     const lidNode = M.firstChild(sym, 'lib_id');
     const libId = lidNode && lidNode.children[1] ? lidNode.children[1].value : '(不明)';
     const props = state.schem.properties(sym);
     const refProp = props.find(function (p) { return p.key === 'Reference'; });
-    const valProp = props.find(function (p) { return p.key === 'Value'; });
 
-    const title = document.createElement('p');
-    title.className = 'prop-title';
-    title.textContent = refProp ? refProp.value : 'シンボル';
-    c.appendChild(title);
+    const title = titleRow(c, refProp ? refProp.value : 'シンボル', libId);
 
-    const sub = document.createElement('p');
-    sub.className = 'prop-sub';
-    sub.textContent = libId;
-    c.appendChild(sub);
-
-    // Reference / Value editors.
     props.forEach(function (p) {
       if (p.key !== 'Reference' && p.key !== 'Value' && !p.value) return;
       c.appendChild(fieldRow(p.key, p.value, function (val) {
         state.schem.setProperty(p.node, val);
         renderer.render();
-        setDirty(true);
+        commitHistory();
         if (p.key === 'Reference') title.textContent = val;
       }));
     });
 
-    // Position / angle.
-    c.appendChild(document.createElement('div')).className = 'section-label';
-    c.lastChild.textContent = '配置';
+    const sec = document.createElement('div');
+    sec.className = 'section-label';
+    sec.textContent = '配置';
+    c.appendChild(sec);
 
     const posWrap = document.createElement('div');
     posWrap.className = 'pos-row';
-    const xField = fieldRow('X (mm)', M.fmt(pl.x), function (v) { applyPos(); });
-    const yField = fieldRow('Y (mm)', M.fmt(pl.y), function (v) { applyPos(); });
-    posWrap.appendChild(xField); posWrap.appendChild(yField);
+    const xField = fieldRow('X (mm)', M.fmt(pl.x), applyPos);
+    const yField = fieldRow('Y (mm)', M.fmt(pl.y), applyPos);
+    posWrap.appendChild(xField);
+    posWrap.appendChild(yField);
     c.appendChild(posWrap);
-    c.appendChild(fieldRow('角度 (°)', M.fmt(pl.angle), function () { applyPos(); }));
+    const aField = fieldRow('角度 (°)', M.fmt(pl.angle), applyPos);
+    c.appendChild(aField);
 
     function applyPos() {
       const nx = parseFloat(xField.querySelector('input').value);
       const ny = parseFloat(yField.querySelector('input').value);
-      const na = parseFloat(c.querySelectorAll('.field input')[c.querySelectorAll('.field input').length - 1].value);
+      const na = parseFloat(aField.querySelector('input').value);
       if (!isFinite(nx) || !isFinite(ny)) return;
       const pl2 = state.schem.placement(sym);
       const dx = nx - pl2.x, dy = ny - pl2.y;
-      M.writeAt(sym, nx, ny, isFinite(na) ? na : pl2.angle);
+      M.writeAt(sym, nx, ny, isFinite(na) ? ((na % 360) + 360) % 360 : pl2.angle);
       M.childLists(sym, 'property').forEach(function (pr) {
         const at = M.readAt(pr);
         if (at) M.writeAt(pr, at.x + dx, at.y + dy, at.angle);
       });
       renderer.invalidate(sym);
       renderer.render();
-      setDirty(true);
+      commitHistory();
     }
 
-    const actions = document.createElement('div');
-    actions.className = 'actions';
-    const rotBtn = document.createElement('button');
-    rotBtn.className = 'btn';
-    rotBtn.textContent = '90° 回転';
-    rotBtn.addEventListener('click', rotateSelected);
-    const deselectBtn = document.createElement('button');
-    deselectBtn.className = 'btn';
-    deselectBtn.textContent = '選択解除';
-    deselectBtn.addEventListener('click', function () { selectSymbol(null); });
-    actions.appendChild(rotBtn); actions.appendChild(deselectBtn);
-    c.appendChild(actions);
+    actionsRow(c, [
+      ['90° 回転', rotateSelected],
+      ['左右反転', function () { mirrorSelected('y'); }],
+      ['上下反転', function () { mirrorSelected('x'); }],
+    ]);
+    actionsRow(c, [
+      ['削除', deleteSelected],
+      ['選択解除', function () { setSelection([]); }],
+    ]);
   }
 
-  // Re-sync the position inputs after a drag/rotate without rebuilding the panel.
-  function syncPropInputs() { renderProps(); }
+  function renderTextProps(c, it) {
+    const node = it.node;
+    const at = M.readAt(node);
+    titleRow(c, kindLabel(it.kind));
+
+    c.appendChild(fieldRow('テキスト', node.children[1] ? node.children[1].value : '', function (val) {
+      M.setText(node, val);
+      renderer.render();
+      commitHistory();
+    }));
+    if (at) {
+      c.appendChild(fieldRow('角度 (°)', M.fmt(at.angle), function (val) {
+        const na = parseFloat(val);
+        if (!isFinite(na)) return;
+        M.writeAt(node, at.x, at.y, ((na % 360) + 360) % 360);
+        renderer.render();
+        commitHistory();
+      }));
+    }
+    actionsRow(c, [
+      ['90° 回転', rotateSelected],
+      ['削除', deleteSelected],
+      ['選択解除', function () { setSelection([]); }],
+    ]);
+  }
+
+  function renderSimpleProps(c, it) {
+    let sub = '';
+    if (isWireKind(it.kind)) {
+      sub = M.readPts(it.node).map(function (p) {
+        return '(' + M.fmt(p.x) + ', ' + M.fmt(p.y) + ')';
+      }).join(' → ');
+    } else {
+      const at = M.readAt(it.node);
+      if (at) sub = '(' + M.fmt(at.x) + ', ' + M.fmt(at.y) + ')';
+    }
+    titleRow(c, kindLabel(it.kind), sub);
+    actionsRow(c, [
+      ['削除', deleteSelected],
+      ['選択解除', function () { setSelection([]); }],
+    ]);
+  }
 
   function fieldRow(label, value, onCommit) {
     const wrap = document.createElement('div');
@@ -433,16 +712,12 @@
 
   function summary() {
     const s = state.schem;
-    const parts = [];
-    const nSym = s.symbols().length;
-    const nWire = s.items('wire').length;
-    const nLabel = s.items(['label', 'global_label', 'hierarchical_label']).length;
-    const nJunc = s.items('junction').length;
-    parts.push('シンボル: ' + nSym);
-    parts.push('配線: ' + nWire);
-    parts.push('ラベル: ' + nLabel);
-    parts.push('ジャンクション: ' + nJunc);
-    return parts.join('<br>');
+    return [
+      'シンボル: ' + s.symbols().length,
+      '配線: ' + s.items('wire').length,
+      'ラベル: ' + s.items(LABEL_KINDS).length,
+      'ジャンクション: ' + s.items('junction').length,
+    ].join('<br>');
   }
 
   // --- misc -----------------------------------------------------------------
@@ -457,6 +732,13 @@
   // Initial paint so the canvas sizes correctly.
   renderer.render();
 
-  // Minimal hook for automated tests / debugging (read-only view state).
-  window.__kicad = { view: renderer.view, isSelected: function () { return !!state.selected; } };
+  // Minimal hook for automated tests / debugging.
+  window.__kicad = {
+    view: renderer.view,
+    selCount: function () { return state.sel.length; },
+    selKind: function () { return state.sel.length ? state.sel[0].kind : null; },
+    text: function () { return state.schem ? serializeNow() : ''; },
+    undo: undoAction,
+    redo: redoAction,
+  };
 })();
