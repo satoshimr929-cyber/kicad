@@ -46,6 +46,10 @@
     this.draft = null;     // {x0,y0,x1,y1,kind} preview segment while drawing a wire
     this.bboxCache = new WeakMap();
     this.showGrid = true;
+    // Called as fieldFilter(propertyKey) -> bool; decides whether a symbol
+    // field (Reference, Value, Footprint, ...) is drawn on the sheet. Null
+    // means "show everything" (used when no app-level preference is set).
+    this.fieldFilter = null;
   }
 
   Renderer.prototype.setSchematic = function (schem) {
@@ -369,6 +373,7 @@
     // Visible properties (Reference, Value, ...) at their absolute positions.
     this.schem.properties(symbolNode).forEach(function (prop) {
       if (prop.hidden || !prop.value || !prop.at) return;
+      if (self.fieldFilter && !self.fieldFilter(prop.key)) return;
       let color = COLORS.field;
       if (prop.key === 'Reference') color = COLORS.reference;
       else if (prop.key === 'Value') color = COLORS.value;

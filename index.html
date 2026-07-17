@@ -26,6 +26,7 @@
       <button id="zoomInBtn" class="btn" disabled>＋</button>
       <button id="zoomOutBtn" class="btn" disabled>－</button>
       <label class="check"><input id="gridChk" type="checkbox" checked> グリッド</label>
+      <button id="fieldsBtn" class="btn" disabled>表示項目…</button>
     </div>
     <div class="toolbar-group grow">
       <span id="fileName" class="filename">ファイル未読み込み</span>
@@ -76,6 +77,25 @@
       </div>
     </aside>
   </main>
+
+  <div id="fieldModal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>表示するフィールド</span>
+        <button id="fieldsClose" class="btn">✕</button>
+      </div>
+      <p class="prop-sub field-modal-hint">
+        シンボルのプロパティ（参照・値・フットプリント等）ごとに、回路図上への表示・非表示を切り替えます。
+        ファイル内のデータや配置には影響しません。
+      </p>
+      <div id="fieldsList" class="field-list"></div>
+      <div class="modal-foot">
+        <button id="fieldsAllBtn" class="btn">すべて表示</button>
+        <button id="fieldsNoneBtn" class="btn">すべて非表示</button>
+        <button id="fieldsResetBtn" class="btn">既定に戻す</button>
+      </div>
+    </div>
+  </div>
 
   <div id="partModal" class="modal" hidden>
     <div class="modal-box">

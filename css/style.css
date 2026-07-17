@@ -99,6 +99,22 @@ select.btn { padding: 6px 8px; }
 }
 .part-item:hover { background: #eef2ff; border-color: var(--accent); }
 
+.field-modal-hint { padding: 0 14px; margin: 10px 0; line-height: 1.6; }
+.field-list {
+  padding: 4px 14px 14px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 50vh;
+}
+.field-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 6px; border-radius: 6px; cursor: pointer;
+  font-size: 13px;
+}
+.field-row:hover { background: #f0f2f5; }
+.field-row input { flex: 0 0 auto; width: 17px; height: 17px; }
+.field-row .field-count { margin-left: auto; color: var(--muted); font-size: 12px; }
+.field-list .hint { padding: 8px 6px; }
+
 /* Workspace ---------------------------------------------------------------- */
 .workspace { flex: 1; display: flex; min-height: 0; }
 

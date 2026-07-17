@@ -19,6 +19,7 @@
     zoomInBtn: document.getElementById('zoomInBtn'),
     zoomOutBtn: document.getElementById('zoomOutBtn'),
     gridChk: document.getElementById('gridChk'),
+    fieldsBtn: document.getElementById('fieldsBtn'),
     fileName: document.getElementById('fileName'),
     dirtyFlag: document.getElementById('dirtyFlag'),
     dropHint: document.getElementById('dropHint'),
@@ -41,7 +42,21 @@
     sel: [],                    // array of {kind, node}
     tool: 'select',             // active placement tool
     placePart: null,            // libId when the 'part' tool is active
+    // On-canvas field visibility overrides, key -> bool. A key absent from
+    // this map falls back to the default rule in isFieldVisible(): only
+    // Reference/Value show by default, everything else (Footprint, Datasheet,
+    // Description, custom fields, ...) is hidden until the user opts in. This
+    // is independent of each field's own (effects ... hide) flag in the file.
+    fieldVisibility: {},
   };
+
+  function isFieldVisible(key) {
+    if (Object.prototype.hasOwnProperty.call(state.fieldVisibility, key)) {
+      return state.fieldVisibility[key];
+    }
+    return key === 'Reference' || key === 'Value';
+  }
+  renderer.fieldFilter = isFieldVisible;
 
   // In-progress wire/bus drawing: `last` is the fixed end of the next segment.
   const wireDraft = { last: null, kind: 'wire' };
@@ -214,6 +229,7 @@
     state.schem = new M.Schematic(root);
     state.filename = filename || 'schematic.kicad_sch';
     state.sel = [];
+    state.fieldVisibility = {};
     wireDraft.last = null;
     renderer.draft = null;
     renderer.setSchematic(state.schem);
@@ -226,7 +242,7 @@
 
     els.dropHint.classList.add('hide');
     els.fileName.textContent = state.filename;
-    [els.saveBtn, els.fitBtn, els.zoomInBtn, els.zoomOutBtn].forEach(function (b) { b.disabled = false; });
+    [els.saveBtn, els.fitBtn, els.zoomInBtn, els.zoomOutBtn, els.fieldsBtn].forEach(function (b) { b.disabled = false; });
     renderProps();
   }
 
@@ -289,6 +305,85 @@
   });
   els.zoomInBtn.addEventListener('click', function () { zoomAtCenter(1.25); });
   els.zoomOutBtn.addEventListener('click', function () { zoomAtCenter(0.8); });
+
+  // --- field visibility modal -------------------------------------------
+
+  const fieldModal = document.getElementById('fieldModal');
+  const fieldsList = document.getElementById('fieldsList');
+
+  // Distinct property keys across all symbols, Reference/Value first, then
+  // alphabetical. Recomputed each time the modal opens so newly-placed
+  // components' fields show up too.
+  function collectFieldKeys() {
+    const seen = {};
+    const keys = [];
+    state.schem.symbols().forEach(function (sym) {
+      state.schem.properties(sym).forEach(function (p) {
+        if (!p.value || seen[p.key]) return;
+        seen[p.key] = true;
+        keys.push(p.key);
+      });
+    });
+    const priority = { Reference: 0, Value: 1 };
+    keys.sort(function (a, b) {
+      const pa = priority[a] !== undefined ? priority[a] : 2;
+      const pb = priority[b] !== undefined ? priority[b] : 2;
+      return pa !== pb ? pa - pb : a.localeCompare(b);
+    });
+    return keys;
+  }
+
+  function buildFieldsList() {
+    const keys = collectFieldKeys();
+    fieldsList.innerHTML = '';
+    if (!keys.length) {
+      fieldsList.innerHTML = '<p class="hint">シンボルにプロパティがありません。</p>';
+      return;
+    }
+    keys.forEach(function (key) {
+      const row = document.createElement('label');
+      row.className = 'field-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = isFieldVisible(key);
+      cb.addEventListener('change', function () {
+        state.fieldVisibility[key] = cb.checked;
+        renderer.render();
+      });
+      const span = document.createElement('span');
+      span.textContent = key;
+      row.appendChild(cb);
+      row.appendChild(span);
+      fieldsList.appendChild(row);
+    });
+  }
+
+  function openFieldsModal() {
+    if (!state.schem) return;
+    buildFieldsList();
+    fieldModal.hidden = false;
+  }
+  function closeFieldsModal() { fieldModal.hidden = true; }
+
+  els.fieldsBtn.addEventListener('click', openFieldsModal);
+  document.getElementById('fieldsClose').addEventListener('click', closeFieldsModal);
+  fieldModal.addEventListener('click', function (e) { if (e.target === fieldModal) closeFieldsModal(); });
+
+  document.getElementById('fieldsAllBtn').addEventListener('click', function () {
+    collectFieldKeys().forEach(function (key) { state.fieldVisibility[key] = true; });
+    buildFieldsList();
+    renderer.render();
+  });
+  document.getElementById('fieldsNoneBtn').addEventListener('click', function () {
+    collectFieldKeys().forEach(function (key) { state.fieldVisibility[key] = false; });
+    buildFieldsList();
+    renderer.render();
+  });
+  document.getElementById('fieldsResetBtn').addEventListener('click', function () {
+    state.fieldVisibility = {};
+    buildFieldsList();
+    renderer.render();
+  });
 
   function zoomAtCenter(factor) {
     const rect = canvas.getBoundingClientRect();
