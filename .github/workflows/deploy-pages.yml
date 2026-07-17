@@ -1,0 +1,52 @@
+name: Deploy to GitHub Pages
+
+# Publishes the static schematic viewer/editor to GitHub Pages.
+# Uses the "GitHub Actions" Pages source, so it serves straight from this
+# branch without needing a separate gh-pages branch.
+
+on:
+  push:
+    branches:
+      - claude/kicad-sch-viewer-editor-etvajl
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Enable Pages automatically if it isn't already turned on.
+          enablement: true
+
+      - name: Assemble static site
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          cp -r css js samples _site/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
