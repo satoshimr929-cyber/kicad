@@ -1,0 +1,567 @@
+// renderer.js — Canvas renderer for a KiCad schematic.
+//
+// World units are millimetres, matching the file. Screen = (world - pan) *
+// scale. The tricky part is the symbol transform: library graphics use +Y up,
+// while the sheet uses +Y down, so every library point is Y-flipped, then
+// rotated (KiCad's positive angle is counter-clockwise on screen), then
+// translated to the instance position.
+
+(function (global) {
+  'use strict';
+
+  const M = global.KiModel;
+
+  // Classic KiCad "light" palette.
+  const COLORS = {
+    background: '#ffffff',
+    grid: '#e6e6e6',
+    page: '#c8c8c8',
+    wire: '#008000',
+    bus: '#000080',
+    junction: '#008000',
+    noConnect: '#0000c0',
+    symbol: '#840000',
+    symbolFill: '#ffffc2',
+    pin: '#840000',
+    pinNumber: '#840000',
+    pinName: '#008484',
+    reference: '#008484',
+    value: '#008484',
+    field: '#808080',
+    label: '#000000',
+    globalLabel: '#a02020',
+    hierLabel: '#a02020',
+    text: '#000000',
+    sheet: '#a02020',
+    selection: '#ff8c00',
+  };
+
+  function Renderer(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.schem = null;
+    this.view = { scale: 4, panX: 0, panY: 0 }; // scale = px per mm
+    this.selected = null;
+    this.bboxCache = new WeakMap();
+    this.showGrid = true;
+  }
+
+  Renderer.prototype.setSchematic = function (schem) {
+    this.schem = schem;
+    this.bboxCache = new WeakMap();
+  };
+
+  Renderer.prototype.invalidate = function (node) {
+    if (node) this.bboxCache.delete(node);
+    else this.bboxCache = new WeakMap();
+  };
+
+  // --- coordinate transforms ------------------------------------------------
+
+  Renderer.prototype.worldToScreen = function (x, y) {
+    return {
+      x: (x - this.view.panX) * this.view.scale,
+      y: (y - this.view.panY) * this.view.scale,
+    };
+  };
+
+  Renderer.prototype.screenToWorld = function (sx, sy) {
+    return {
+      x: sx / this.view.scale + this.view.panX,
+      y: sy / this.view.scale + this.view.panY,
+    };
+  };
+
+  // Transform a library point (+Y up) to world/sheet coordinates.
+  function symbolTransform(lx, ly, p) {
+    let x = lx, y = ly;
+    if (p.mirror === 'y') x = -x; // mirror about Y axis
+    if (p.mirror === 'x') y = -y; // mirror about X axis
+    y = -y;                       // lib +Y up  ->  sheet +Y down
+    const a = (p.angle || 0) * Math.PI / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    return {
+      x: p.x + x * cos + y * sin,
+      y: p.y - x * sin + y * cos,
+    };
+  }
+  Renderer.symbolTransform = symbolTransform;
+
+  // --- bounding boxes -------------------------------------------------------
+
+  function growBox(box, x, y) {
+    if (x < box.minX) box.minX = x;
+    if (y < box.minY) box.minY = y;
+    if (x > box.maxX) box.maxX = x;
+    if (y > box.maxY) box.maxY = y;
+  }
+
+  Renderer.prototype.symbolBBox = function (symbolNode) {
+    let box = this.bboxCache.get(symbolNode);
+    if (box) return box;
+
+    const lib = this.schem.libFor(symbolNode);
+    const p = this.schem.placement(symbolNode);
+    box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+
+    if (lib) {
+      lib.bodies.forEach(function (body) {
+        if (body.unit !== 0 && body.unit !== p.unit) return;
+        body.graphics.forEach(function (g) {
+          collectGraphicPoints(g).forEach(function (pt) {
+            const w = symbolTransform(pt.x, pt.y, p);
+            growBox(box, w.x, w.y);
+          });
+        });
+        body.pins.forEach(function (pin) {
+          const tip = symbolTransform(pin.x, pin.y, p);
+          const bx = pin.x - pin.length * Math.cos(pin.angle * Math.PI / 180);
+          const by = pin.y - pin.length * Math.sin(pin.angle * Math.PI / 180);
+          const base = symbolTransform(bx, by, p);
+          growBox(box, tip.x, tip.y);
+          growBox(box, base.x, base.y);
+        });
+      });
+    }
+
+    if (!isFinite(box.minX)) {
+      // No graphics (e.g. power symbol placeholder): fall back to a small box.
+      box = { minX: p.x - 2.54, minY: p.y - 2.54, maxX: p.x + 2.54, maxY: p.y + 2.54 };
+    }
+    this.bboxCache.set(symbolNode, box);
+    return box;
+  };
+
+  function collectGraphicPoints(g) {
+    switch (g.type) {
+      case 'rectangle':
+        return [g.start, g.end, { x: g.start.x, y: g.end.y }, { x: g.end.x, y: g.start.y }];
+      case 'polyline':
+        return g.pts;
+      case 'circle':
+        return [
+          { x: g.center.x - g.radius, y: g.center.y - g.radius },
+          { x: g.center.x + g.radius, y: g.center.y + g.radius },
+        ];
+      case 'arc':
+        return [g.start, g.mid, g.end];
+      case 'text':
+        return [{ x: g.x, y: g.y }];
+      default:
+        return [];
+    }
+  }
+
+  // Overall bounding box of the whole schematic, in world coords.
+  Renderer.prototype.contentBBox = function () {
+    const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    const self = this;
+    if (!this.schem) return null;
+
+    this.schem.symbols().forEach(function (s) {
+      const b = self.symbolBBox(s);
+      growBox(box, b.minX, b.minY);
+      growBox(box, b.maxX, b.maxY);
+    });
+    ['wire', 'bus', 'polyline'].forEach(function (t) {
+      self.schem.items(t).forEach(function (w) {
+        M.readPts(w).forEach(function (pt) { growBox(box, pt.x, pt.y); });
+      });
+    });
+    ['label', 'global_label', 'hierarchical_label', 'text', 'junction', 'no_connect'].forEach(function (t) {
+      self.schem.items(t).forEach(function (node) {
+        const at = M.readAt(node);
+        if (at) growBox(box, at.x, at.y);
+      });
+    });
+    self.schem.items('sheet').forEach(function (sh) {
+      const at = M.readAt(sh);
+      const size = M.firstChild(sh, 'size');
+      if (at) {
+        growBox(box, at.x, at.y);
+        if (size) growBox(box, at.x + M.num(size.children[1]), at.y + M.num(size.children[2]));
+      }
+    });
+
+    if (!isFinite(box.minX)) return null;
+    return box;
+  };
+
+  Renderer.prototype.fit = function () {
+    const box = this.contentBBox();
+    const rect = this.canvas.getBoundingClientRect();
+    if (!box) {
+      this.view = { scale: 4, panX: 0, panY: 0 };
+      return;
+    }
+    const margin = 10; // mm
+    const w = (box.maxX - box.minX) + margin * 2;
+    const h = (box.maxY - box.minY) + margin * 2;
+    const sx = rect.width / w;
+    const sy = rect.height / h;
+    const scale = Math.min(sx, sy);
+    this.view.scale = scale > 0 && isFinite(scale) ? scale : 4;
+    this.view.panX = box.minX - margin - (rect.width / this.view.scale - w) / 2;
+    this.view.panY = box.minY - margin - (rect.height / this.view.scale - h) / 2;
+  };
+
+  // --- hit testing ----------------------------------------------------------
+
+  Renderer.prototype.symbolAt = function (worldX, worldY) {
+    const symbols = this.schem.symbols();
+    for (let i = symbols.length - 1; i >= 0; i--) {
+      const b = this.symbolBBox(symbols[i]);
+      if (worldX >= b.minX && worldX <= b.maxX && worldY >= b.minY && worldY <= b.maxY) {
+        return symbols[i];
+      }
+    }
+    return null;
+  };
+
+  // --- rendering ------------------------------------------------------------
+
+  Renderer.prototype.render = function () {
+    const ctx = this.ctx;
+    const dpr = global.devicePixelRatio || 1;
+    const rect = this.canvas.getBoundingClientRect();
+    if (this.canvas.width !== Math.round(rect.width * dpr) ||
+        this.canvas.height !== Math.round(rect.height * dpr)) {
+      this.canvas.width = Math.round(rect.width * dpr);
+      this.canvas.height = Math.round(rect.height * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = COLORS.background;
+    ctx.fillRect(0, 0, rect.width, rect.height);
+
+    if (!this.schem) return;
+    if (this.showGrid) this.drawGrid(rect);
+
+    const self = this;
+    // Wires / buses.
+    this.schem.items('bus').forEach(function (w) { self.drawWire(w, COLORS.bus, 0.3); });
+    this.schem.items('wire').forEach(function (w) { self.drawWire(w, COLORS.wire, 0.15); });
+    this.schem.items('polyline').forEach(function (w) { self.drawWire(w, COLORS.text, 0.15); });
+
+    // Symbols.
+    this.schem.symbols().forEach(function (s) { self.drawSymbol(s); });
+
+    // Junctions, no-connects.
+    this.schem.items('junction').forEach(function (j) { self.drawJunction(j); });
+    this.schem.items('no_connect').forEach(function (n) { self.drawNoConnect(n); });
+
+    // Labels & text.
+    this.schem.items('label').forEach(function (l) { self.drawLabel(l, COLORS.label, 'local'); });
+    this.schem.items('global_label').forEach(function (l) { self.drawLabel(l, COLORS.globalLabel, 'global'); });
+    this.schem.items('hierarchical_label').forEach(function (l) { self.drawLabel(l, COLORS.hierLabel, 'hier'); });
+    this.schem.items('text').forEach(function (t) { self.drawText(t); });
+    this.schem.items('sheet').forEach(function (sh) { self.drawSheet(sh); });
+
+    if (this.selected) this.drawSelection(this.selected);
+  };
+
+  Renderer.prototype.drawGrid = function (rect) {
+    const ctx = this.ctx;
+    const step = 2.54; // mm
+    const px = step * this.view.scale;
+    if (px < 6) return; // too dense to be useful
+    const start = this.screenToWorld(0, 0);
+    const end = this.screenToWorld(rect.width, rect.height);
+    ctx.strokeStyle = COLORS.grid;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = Math.ceil(start.x / step) * step; x < end.x; x += step) {
+      const s = this.worldToScreen(x, 0);
+      ctx.moveTo(s.x, 0);
+      ctx.lineTo(s.x, rect.height);
+    }
+    for (let y = Math.ceil(start.y / step) * step; y < end.y; y += step) {
+      const s = this.worldToScreen(0, y);
+      ctx.moveTo(0, s.y);
+      ctx.lineTo(rect.width, s.y);
+    }
+    ctx.stroke();
+  };
+
+  Renderer.prototype.drawWire = function (node, color, widthMm) {
+    const pts = M.readPts(node);
+    if (pts.length < 2) return;
+    const ctx = this.ctx;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, widthMm * this.view.scale);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const s = this.worldToScreen(pts[i].x, pts[i].y);
+      if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+    }
+    ctx.stroke();
+  };
+
+  Renderer.prototype.drawJunction = function (node) {
+    const at = M.readAt(node);
+    if (!at) return;
+    const ctx = this.ctx;
+    const s = this.worldToScreen(at.x, at.y);
+    ctx.fillStyle = COLORS.junction;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, Math.max(2, 0.5 * this.view.scale), 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  Renderer.prototype.drawNoConnect = function (node) {
+    const at = M.readAt(node);
+    if (!at) return;
+    const ctx = this.ctx;
+    const s = this.worldToScreen(at.x, at.y);
+    const r = 0.635 * this.view.scale;
+    ctx.strokeStyle = COLORS.noConnect;
+    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.beginPath();
+    ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y + r);
+    ctx.moveTo(s.x - r, s.y + r); ctx.lineTo(s.x + r, s.y - r);
+    ctx.stroke();
+  };
+
+  Renderer.prototype.drawSymbol = function (symbolNode) {
+    const lib = this.schem.libFor(symbolNode);
+    const p = this.schem.placement(symbolNode);
+    const ctx = this.ctx;
+    const self = this;
+
+    if (lib) {
+      lib.bodies.forEach(function (body) {
+        if (body.unit !== 0 && body.unit !== p.unit) return;
+        body.graphics.forEach(function (g) { self.drawGraphic(g, p); });
+        body.pins.forEach(function (pin) { self.drawPin(pin, p, lib); });
+      });
+    }
+
+    // Visible properties (Reference, Value, ...) at their absolute positions.
+    this.schem.properties(symbolNode).forEach(function (prop) {
+      if (prop.hidden || !prop.value || !prop.at) return;
+      let color = COLORS.field;
+      if (prop.key === 'Reference') color = COLORS.reference;
+      else if (prop.key === 'Value') color = COLORS.value;
+      self.drawFieldText(prop.value, prop.at.x, prop.at.y, prop.at.angle, color, 1.27, prop.node);
+    });
+  };
+
+  Renderer.prototype.drawGraphic = function (g, p) {
+    const ctx = this.ctx;
+    const self = this;
+    ctx.strokeStyle = COLORS.symbol;
+    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.lineJoin = 'round';
+
+    function moveTo(pt) { const s = self.worldToScreen(pt.x, pt.y); ctx.moveTo(s.x, s.y); }
+    function lineTo(pt) { const s = self.worldToScreen(pt.x, pt.y); ctx.lineTo(s.x, s.y); }
+
+    function applyFill(fill) {
+      if (fill === 'background') { ctx.fillStyle = COLORS.symbolFill; ctx.fill(); }
+      else if (fill === 'outline') { ctx.fillStyle = COLORS.symbol; ctx.fill(); }
+    }
+
+    if (g.type === 'rectangle') {
+      const c = [
+        symbolTransform(g.start.x, g.start.y, p),
+        symbolTransform(g.end.x, g.start.y, p),
+        symbolTransform(g.end.x, g.end.y, p),
+        symbolTransform(g.start.x, g.end.y, p),
+      ];
+      ctx.beginPath();
+      moveTo(c[0]); lineTo(c[1]); lineTo(c[2]); lineTo(c[3]); ctx.closePath();
+      applyFill(g.fill);
+      ctx.stroke();
+    } else if (g.type === 'polyline') {
+      if (g.pts.length < 2) return;
+      ctx.beginPath();
+      for (let i = 0; i < g.pts.length; i++) {
+        const w = symbolTransform(g.pts[i].x, g.pts[i].y, p);
+        if (i === 0) moveTo(w); else lineTo(w);
+      }
+      applyFill(g.fill);
+      ctx.stroke();
+    } else if (g.type === 'circle') {
+      const c = symbolTransform(g.center.x, g.center.y, p);
+      const s = this.worldToScreen(c.x, c.y);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, g.radius * this.view.scale, 0, Math.PI * 2);
+      applyFill(g.fill);
+      ctx.stroke();
+    } else if (g.type === 'arc') {
+      this.drawArc(g, p);
+    } else if (g.type === 'text') {
+      const w = symbolTransform(g.x, g.y, p);
+      this.drawFieldText(g.text, w.x, w.y, 0, COLORS.symbol, 1.27, null);
+    }
+  };
+
+  Renderer.prototype.drawArc = function (g, p) {
+    const a = symbolTransform(g.start.x, g.start.y, p);
+    const b = symbolTransform(g.mid.x, g.mid.y, p);
+    const c = symbolTransform(g.end.x, g.end.y, p);
+    const ctx = this.ctx;
+    ctx.strokeStyle = COLORS.symbol;
+    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+
+    const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+    if (Math.abs(d) < 1e-9) {
+      // Degenerate: draw straight segments.
+      const sa = this.worldToScreen(a.x, a.y), sc = this.worldToScreen(c.x, c.y);
+      ctx.beginPath(); ctx.moveTo(sa.x, sa.y); ctx.lineTo(sc.x, sc.y); ctx.stroke();
+      return;
+    }
+    const a2 = a.x * a.x + a.y * a.y, b2 = b.x * b.x + b.y * b.y, c2 = c.x * c.x + c.y * c.y;
+    const cx = (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d;
+    const cy = (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d;
+    const r = Math.hypot(a.x - cx, a.y - cy);
+    const sc = this.worldToScreen(cx, cy);
+    let a1 = Math.atan2(a.y - cy, a.x - cx);
+    let am = Math.atan2(b.y - cy, b.x - cx);
+    let a3 = Math.atan2(c.y - cy, c.x - cx);
+    // Choose sweep direction so the arc passes through the mid point.
+    const anticlockwise = !angleBetween(a1, am, a3);
+    ctx.beginPath();
+    ctx.arc(sc.x, sc.y, r * this.view.scale, a1, a3, anticlockwise);
+    ctx.stroke();
+  };
+
+  // True if sweeping clockwise from a1 to a2 passes through mid.
+  function angleBetween(a1, mid, a2) {
+    const norm = function (x) { while (x < 0) x += Math.PI * 2; while (x >= Math.PI * 2) x -= Math.PI * 2; return x; };
+    const span = norm(a2 - a1);
+    const m = norm(mid - a1);
+    return m <= span;
+  }
+
+  Renderer.prototype.drawPin = function (pin, p, lib) {
+    if (pin.hide) return;
+    const ctx = this.ctx;
+    const rad = pin.angle * Math.PI / 180;
+    const bx = pin.x - pin.length * Math.cos(rad);
+    const by = pin.y - pin.length * Math.sin(rad);
+    const tip = symbolTransform(pin.x, pin.y, p);
+    const base = symbolTransform(bx, by, p);
+
+    const st = this.worldToScreen(tip.x, tip.y);
+    const sb = this.worldToScreen(base.x, base.y);
+    ctx.strokeStyle = COLORS.pin;
+    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.beginPath();
+    ctx.moveTo(sb.x, sb.y); ctx.lineTo(st.x, st.y);
+    ctx.stroke();
+
+    // Pin number near the pin body; pin name near the tip (unless hidden).
+    if (this.view.scale >= 6) {
+      const mid = { x: (tip.x + base.x) / 2, y: (tip.y + base.y) / 2 };
+      if (!lib.hidePinNumbers && pin.number && pin.number !== '~') {
+        this.drawFieldText(pin.number, mid.x, mid.y - 0.4, 0, COLORS.pinNumber, 1.0, null);
+      }
+      if (!lib.hidePinNames && pin.name && pin.name !== '~') {
+        this.drawFieldText(pin.name, tip.x, tip.y, 0, COLORS.pinName, 1.0, null);
+      }
+    }
+  };
+
+  // Draw text centred at (x,y). `owner` lets callers hit-test later; unused here.
+  Renderer.prototype.drawFieldText = function (text, x, y, angle, color, sizeMm, owner) {
+    const ctx = this.ctx;
+    const s = this.worldToScreen(x, y);
+    const px = Math.max(7, sizeMm * this.view.scale);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    if (angle === 90 || angle === 270) ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = color;
+    ctx.font = px + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  };
+
+  Renderer.prototype.drawLabel = function (node, color, kind) {
+    const at = M.readAt(node);
+    const text = node.children[1] ? node.children[1].value : '';
+    if (!at) return;
+    const ctx = this.ctx;
+    const s = this.worldToScreen(at.x, at.y);
+    const px = Math.max(8, 1.27 * this.view.scale);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    if (at.angle === 90 || at.angle === 270) ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = color;
+    ctx.font = px + 'px sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = (at.angle === 180) ? 'right' : 'left';
+    // Small anchor square marks the attachment point.
+    ctx.fillRect(-1.5, -1.5, 3, 3);
+    const pad = 4;
+    ctx.fillText(text, ctx.textAlign === 'right' ? -pad : pad, 0);
+    ctx.restore();
+  };
+
+  Renderer.prototype.drawText = function (node) {
+    const at = M.readAt(node);
+    const text = node.children[1] ? node.children[1].value : '';
+    if (!at) return;
+    const ctx = this.ctx;
+    const eff = M.firstChild(node, 'effects');
+    let sizeMm = 1.27;
+    if (eff) {
+      const font = M.firstChild(eff, 'font');
+      if (font) {
+        const size = M.firstChild(font, 'size');
+        if (size) sizeMm = M.num(size.children[1]);
+      }
+    }
+    const s = this.worldToScreen(at.x, at.y);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    if (at.angle === 90 || at.angle === 270) ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = COLORS.text;
+    ctx.font = Math.max(8, sizeMm * this.view.scale) + 'px sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    text.split('\n').forEach(function (line, i) {
+      ctx.fillText(line, 0, i * sizeMm * 1.3);
+    });
+    ctx.restore();
+  };
+
+  Renderer.prototype.drawSheet = function (node) {
+    const at = M.readAt(node);
+    const size = M.firstChild(node, 'size');
+    if (!at || !size) return;
+    const ctx = this.ctx;
+    const w = M.num(size.children[1]), h = M.num(size.children[2]);
+    const s = this.worldToScreen(at.x, at.y);
+    ctx.strokeStyle = COLORS.sheet;
+    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.strokeRect(s.x, s.y, w * this.view.scale, h * this.view.scale);
+    // Sheet name / file from properties.
+    const props = M.childLists(node, 'property');
+    props.forEach(function (pr, i) {
+      const val = pr.children[2] ? pr.children[2].value : '';
+      ctx.fillStyle = COLORS.sheet;
+      ctx.font = Math.max(8, 1.27 * this.view.scale) + 'px sans-serif';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(val, s.x, s.y - 2 - i * (1.6 * this.view.scale));
+    });
+  };
+
+  Renderer.prototype.drawSelection = function (symbolNode) {
+    const b = this.symbolBBox(symbolNode);
+    const ctx = this.ctx;
+    const tl = this.worldToScreen(b.minX, b.minY);
+    const br = this.worldToScreen(b.maxX, b.maxY);
+    const pad = 4;
+    ctx.strokeStyle = COLORS.selection;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 3]);
+    ctx.strokeRect(tl.x - pad, tl.y - pad, (br.x - tl.x) + pad * 2, (br.y - tl.y) + pad * 2);
+    ctx.setLineDash([]);
+  };
+
+  Renderer.COLORS = COLORS;
+  global.KiRenderer = Renderer;
+})(typeof window !== 'undefined' ? window : globalThis);
