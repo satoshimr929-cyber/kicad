@@ -39,7 +39,37 @@
     filename: 'schematic.kicad_sch',
     dirty: false,
     sel: [],                    // array of {kind, node}
+    tool: 'select',             // active placement tool
   };
+
+  // In-progress wire/bus drawing: `last` is the fixed end of the next segment.
+  const wireDraft = { last: null, kind: 'wire' };
+
+  // --- tool switching -------------------------------------------------------
+
+  const toolButtons = Array.prototype.slice.call(document.querySelectorAll('#toolsBar .tool'));
+  const powerSel = document.getElementById('powerSel');
+
+  function setTool(tool) {
+    state.tool = tool;
+    cancelDraft();
+    if (tool !== 'select') setSelection([]);
+    toolButtons.forEach(function (b) {
+      b.classList.toggle('active', b.dataset.tool === tool);
+    });
+    canvas.classList.toggle('crosshair', tool !== 'select');
+  }
+
+  function cancelDraft() {
+    wireDraft.last = null;
+    renderer.draft = null;
+    renderer.render();
+  }
+
+  toolButtons.forEach(function (b) {
+    b.addEventListener('click', function () { setTool(b.dataset.tool); });
+  });
+  powerSel.addEventListener('change', function () { setTool('power'); });
 
   const WIRE_KINDS = ['wire', 'bus', 'polyline'];
   const LABEL_KINDS = ['label', 'global_label', 'hierarchical_label'];
@@ -99,6 +129,8 @@
     state.schem = new M.Schematic(root);
     state.filename = filename || 'schematic.kicad_sch';
     state.sel = [];
+    wireDraft.last = null;
+    renderer.draft = null;
     renderer.setSchematic(state.schem);
     renderer.selection = state.sel;
     setDirty(false);
@@ -234,15 +266,25 @@
     const w = eventWorld(e);
     const touch = e.pointerType === 'touch';
     const tol = (touch ? 8 : 4) / renderer.view.scale;
-    const item = renderer.itemAt(w.x, w.y, tol);
 
     drag.startX = e.clientX;
     drag.startY = e.clientY;
     drag.moved = false;
     drag.pointerType = e.pointerType;
-    drag.tapItem = item;
     drag.startWorld = w;
     drag.addToSel = e.shiftKey;
+
+    // With a placement tool active, dragging pans and a tap places.
+    if (state.tool !== 'select') {
+      drag.tapItem = null;
+      drag.mode = 'pan';
+      drag.panX0 = renderer.view.panX;
+      drag.panY0 = renderer.view.panY;
+      return;
+    }
+
+    const item = renderer.itemAt(w.x, w.y, tol);
+    drag.tapItem = item;
 
     if (e.shiftKey && !touch) {
       if (item) {
@@ -274,6 +316,12 @@
     if (state.schem) {
       const w = eventWorld(e);
       els.coords.textContent = w.x.toFixed(2) + ', ' + w.y.toFixed(2) + ' mm';
+      // Live preview of the pending wire segment (mouse hover or touch drag).
+      if ((state.tool === 'wire' || state.tool === 'bus') && wireDraft.last) {
+        const t = orthoTarget(wireDraft.last, { x: snap(w.x), y: snap(w.y) });
+        renderer.draft = { x0: wireDraft.last.x, y0: wireDraft.last.y, x1: t.x, y1: t.y, kind: wireDraft.kind };
+        renderer.render();
+      }
     }
 
     if (pinch && pointers.size >= 2) {
@@ -328,7 +376,9 @@
       renderProps();
     } else if (drag.mode && !drag.moved) {
       // A tap/click that did not drag.
-      if (drag.tapItem) {
+      if (state.tool !== 'select') {
+        handleToolTap(drag.startWorld);
+      } else if (drag.tapItem) {
         if (drag.addToSel) toggleSelection(drag.tapItem);
         else setSelection([drag.tapItem]);
       } else if (state.sel.length && !drag.addToSel) {
@@ -489,6 +539,185 @@
     commitHistory();
   }
 
+  // --- placement tools ------------------------------------------------------
+
+  function uuid() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+
+  const f = M.fmt;
+
+  function addTop(node) {
+    state.schem.root.children.push(node);
+    return node;
+  }
+
+  // Constrain the pending segment to horizontal or vertical (dominant axis).
+  function orthoTarget(from, to) {
+    return Math.abs(to.x - from.x) >= Math.abs(to.y - from.y)
+      ? { x: to.x, y: from.y }
+      : { x: from.x, y: to.y };
+  }
+
+  function handleToolTap(wRaw) {
+    if (!state.schem) return;
+    const w = { x: snap(wRaw.x), y: snap(wRaw.y) };
+
+    switch (state.tool) {
+      case 'wire':
+      case 'bus': {
+        if (!wireDraft.last) {
+          wireDraft.last = w;
+          wireDraft.kind = state.tool;
+          renderer.draft = { x0: w.x, y0: w.y, x1: w.x, y1: w.y, kind: state.tool };
+          renderer.render();
+          return;
+        }
+        const t = orthoTarget(wireDraft.last, w);
+        if (t.x === wireDraft.last.x && t.y === wireDraft.last.y) {
+          cancelDraft(); // clicking the same point ends the run
+          return;
+        }
+        addWireSegment(wireDraft.kind, wireDraft.last, t);
+        wireDraft.last = t;
+        renderer.draft = { x0: t.x, y0: t.y, x1: t.x, y1: t.y, kind: wireDraft.kind };
+        renderer.render();
+        return;
+      }
+      case 'junction':
+        addTop(S.parse('(junction (at ' + f(w.x) + ' ' + f(w.y) + ') (diameter 0) (color 0 0 0 0) (uuid "' + uuid() + '"))'));
+        finishPlacement(null);
+        return;
+      case 'no_connect':
+        addTop(S.parse('(no_connect (at ' + f(w.x) + ' ' + f(w.y) + ') (uuid "' + uuid() + '"))'));
+        finishPlacement(null);
+        return;
+      case 'label': {
+        const node = addTop(S.parse('(label "NET1" (at ' + f(w.x) + ' ' + f(w.y) + ' 0)\n' +
+          '  (effects (font (size 1.27 1.27)) (justify left bottom))\n' +
+          '  (uuid "' + uuid() + '"))'));
+        finishPlacement({ kind: 'label', node: node });
+        return;
+      }
+      case 'global_label': {
+        const node = addTop(S.parse('(global_label "NET1" (shape input) (at ' + f(w.x) + ' ' + f(w.y) + ' 0)\n' +
+          '  (effects (font (size 1.27 1.27)) (justify left))\n' +
+          '  (uuid "' + uuid() + '"))'));
+        finishPlacement({ kind: 'global_label', node: node });
+        return;
+      }
+      case 'text': {
+        const node = addTop(S.parse('(text "TEXT" (at ' + f(w.x) + ' ' + f(w.y) + ' 0)\n' +
+          '  (effects (font (size 1.27 1.27)) (justify left bottom))\n' +
+          '  (uuid "' + uuid() + '"))'));
+        finishPlacement({ kind: 'text', node: node });
+        return;
+      }
+      case 'power':
+        placePower(powerSel.value, w.x, w.y);
+        return;
+    }
+  }
+
+  // Common tail for single-click placements.
+  function finishPlacement(selectItem) {
+    renderer.render();
+    commitHistory();
+    if (selectItem) setSelection([selectItem]);
+    else renderProps();
+  }
+
+  function addWireSegment(kind, a, b) {
+    addTop(S.parse('(' + kind + ' (pts (xy ' + f(a.x) + ' ' + f(a.y) + ') (xy ' + f(b.x) + ' ' + f(b.y) + '))\n' +
+      '  (stroke (width 0) (type default))\n' +
+      '  (uuid "' + uuid() + '"))'));
+    if (kind === 'wire') {
+      // T-connections: junction where an endpoint meets another wire's middle,
+      // or where an existing endpoint sits inside this new segment.
+      const candidates = [a, b];
+      state.schem.items('wire').forEach(function (wn) {
+        M.readPts(wn).forEach(function (p) {
+          if (pointInsideSeg(p, a, b)) candidates.push(p);
+        });
+      });
+      candidates.forEach(maybeAddJunction);
+    }
+    renderer.render();
+    commitHistory();
+  }
+
+  const EPS = 0.01;
+  function near(p, q) { return Math.abs(p.x - q.x) < EPS && Math.abs(p.y - q.y) < EPS; }
+
+  // True if p lies on segment a-b but is not one of its endpoints.
+  function pointInsideSeg(p, a, b) {
+    if (near(p, a) || near(p, b)) return false;
+    const cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    if (Math.abs(cross) > EPS) return false;
+    const dot = (p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y);
+    const len2 = (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y);
+    return dot > EPS && dot < len2 - EPS;
+  }
+
+  function maybeAddJunction(pt) {
+    const already = state.schem.items('junction').some(function (j) {
+      const at = M.readAt(j);
+      return at && near(at, pt);
+    });
+    if (already) return;
+    let ends = 0, interiors = 0;
+    state.schem.items('wire').forEach(function (wn) {
+      const pts = M.readPts(wn);
+      let endHit = false, interiorHit = false;
+      for (let i = 0; i < pts.length; i++) {
+        if (near(pts[i], pt)) endHit = true;
+      }
+      for (let i = 0; i + 1 < pts.length; i++) {
+        if (pointInsideSeg(pt, pts[i], pts[i + 1])) interiorHit = true;
+      }
+      if (endHit) ends++;
+      else if (interiorHit) interiors++;
+    });
+    if (ends >= 3 || (ends >= 1 && interiors >= 1)) {
+      addTop(S.parse('(junction (at ' + f(pt.x) + ' ' + f(pt.y) + ') (diameter 0) (color 0 0 0 0) (uuid "' + uuid() + '"))'));
+    }
+  }
+
+  // Next free "#PWR0n" reference for placed power symbols.
+  function nextPwrRef() {
+    let max = 0;
+    state.schem.symbols().forEach(function (sym) {
+      state.schem.properties(sym).forEach(function (p) {
+        if (p.key !== 'Reference') return;
+        const m = /^#PWR0*(\d+)$/.exec(p.value);
+        if (m) max = Math.max(max, parseInt(m[1], 10));
+      });
+    });
+    return '#PWR0' + (max + 1);
+  }
+
+  function placePower(libId, x, y) {
+    const meta = window.KiLibrary.ensurePower(state.schem, libId);
+    if (!meta) return;
+    const name = libId.split(':')[1];
+    const node = addTop(S.parse(
+      '(symbol (lib_id "' + libId + '") (at ' + f(x) + ' ' + f(y) + ' 0) (unit 1)\n' +
+      '  (in_bom yes) (on_board yes) (dnp no)\n' +
+      '  (uuid "' + uuid() + '")\n' +
+      '  (property "Reference" "' + nextPwrRef() + '" (at ' + f(x) + ' ' + f(y + meta.refDy) + ' 0)\n' +
+      '    (effects (font (size 1.27 1.27)) hide))\n' +
+      '  (property "Value" "' + name + '" (at ' + f(x) + ' ' + f(y + meta.valueDy) + ' 0)\n' +
+      '    (effects (font (size 1.27 1.27))))\n' +
+      '  (pin "1" (uuid "' + uuid() + '"))\n' +
+      ')'));
+    renderer.invalidate();
+    finishPlacement({ kind: 'symbol', node: node });
+  }
+
   // --- keyboard shortcuts ---------------------------------------------------
 
   window.addEventListener('keydown', function (e) {
@@ -506,7 +735,14 @@
       return;
     }
     if (!state.schem) return;
-    if (k === 'Escape') { setSelection([]); return; }
+    if (k === 'Escape') {
+      if (wireDraft.last) cancelDraft();
+      else if (state.tool !== 'select') setTool('select');
+      else setSelection([]);
+      return;
+    }
+    if (k === 'w' || k === 'W') { setTool('wire'); return; }
+    if (k === 'l' || k === 'L') { setTool('label'); return; }
     if (!state.sel.length) return;
     if (k === 'r' || k === 'R') rotateSelected();
     else if (k === 'x' || k === 'X') mirrorSelected('x');
@@ -536,7 +772,8 @@
     if (state.sel.length === 0) {
       c.innerHTML =
         '<p class="hint">アイテムをクリック / タップで選択。Shift+ドラッグで範囲選択。<br>' +
-        'R: 回転, X/Y: 反転, Del: 削除, Ctrl+Z: 元に戻す</p>' +
+        'ツールバーの「配線」等で新規描画（クリックで頂点、Esc で終了）。<br>' +
+        'R: 回転, X/Y: 反転, Del: 削除, W: 配線, L: ラベル, Ctrl+Z: 元に戻す</p>' +
         '<div class="section-label">回路図の内容</div>' +
         '<div class="prop-sub">' + summary() + '</div>';
       return;

@@ -58,6 +58,19 @@ body { display: flex; flex-direction: column; }
 .filename { font-size: 13px; color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dirty { font-size: 12px; color: var(--danger); font-weight: 600; }
 
+/* Second toolbar row: placement tools */
+.toolbar.tools {
+  height: auto;
+  padding: 6px 10px;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.toolbar.tools .btn { flex: 0 0 auto; }
+.btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+select.btn { padding: 6px 8px; }
+#canvas.crosshair { cursor: crosshair; }
+
 /* Workspace ---------------------------------------------------------------- */
 .workspace { flex: 1; display: flex; min-height: 0; }
 

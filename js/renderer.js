@@ -43,6 +43,7 @@
     this.view = { scale: 4, panX: 0, panY: 0 }; // scale = px per mm
     this.selection = [];   // array of {kind, node}
     this.rubber = null;    // {x0,y0,x1,y1} in world mm while band-selecting
+    this.draft = null;     // {x0,y0,x1,y1,kind} preview segment while drawing a wire
     this.bboxCache = new WeakMap();
     this.showGrid = true;
   }
@@ -267,6 +268,25 @@
       }
     }
     if (this.rubber) this.drawRubber();
+    if (this.draft) this.drawDraft();
+  };
+
+  Renderer.prototype.drawDraft = function () {
+    const d = this.draft;
+    const ctx = this.ctx;
+    const a = this.worldToScreen(d.x0, d.y0);
+    const b = this.worldToScreen(d.x1, d.y1);
+    ctx.strokeStyle = d.kind === 'bus' ? COLORS.bus : COLORS.wire;
+    ctx.lineWidth = Math.max(1, (d.kind === 'bus' ? 0.3 : 0.15) * this.view.scale);
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Mark the fixed starting point.
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fillRect(a.x - 3, a.y - 3, 6, 6);
   };
 
   Renderer.prototype.drawGrid = function (rect) {

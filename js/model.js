@@ -261,6 +261,14 @@
     }
   }
 
+  // Parse an inserted `(symbol "lib:Name" ...)` lib definition and make it
+  // available for rendering (used when placing built-in power symbols).
+  Schematic.prototype.registerLibSymbol = function (node) {
+    const parsed = parseLibSymbol(node);
+    this.libSymbols[parsed.name] = parsed;
+    return parsed;
+  };
+
   // Direct top-level child lists with any of the given heads.
   Schematic.prototype.items = function (names) {
     const set = Array.isArray(names) ? names : [names];

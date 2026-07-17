@@ -33,6 +33,25 @@
     </div>
   </header>
 
+  <div class="toolbar tools" id="toolsBar">
+    <button class="btn tool active" data-tool="select">選択</button>
+    <button class="btn tool" data-tool="wire">配線</button>
+    <button class="btn tool" data-tool="bus">バス</button>
+    <button class="btn tool" data-tool="label">ラベル</button>
+    <button class="btn tool" data-tool="global_label">グローバル</button>
+    <button class="btn tool" data-tool="power">電源</button>
+    <select id="powerSel" class="btn" title="配置する電源シンボル">
+      <option value="power:GND">GND</option>
+      <option value="power:+5V">+5V</option>
+      <option value="power:+3V3">+3V3</option>
+      <option value="power:+12V">+12V</option>
+      <option value="power:VCC">VCC</option>
+    </select>
+    <button class="btn tool" data-tool="junction">ジャンクション</button>
+    <button class="btn tool" data-tool="no_connect">NC</button>
+    <button class="btn tool" data-tool="text">テキスト</button>
+  </div>
+
   <main class="workspace">
     <div id="canvasWrap" class="canvas-wrap">
       <canvas id="canvas"></canvas>
@@ -60,6 +79,7 @@
   <script src="js/sexpr.js"></script>
   <script src="js/model.js"></script>
   <script src="js/history.js"></script>
+  <script src="js/library.js"></script>
   <script src="js/hershey.js"></script>
   <script src="js/strokefont.js"></script>
   <script src="js/renderer.js"></script>
