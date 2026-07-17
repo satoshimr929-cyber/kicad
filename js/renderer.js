@@ -115,8 +115,8 @@
         });
         body.pins.forEach(function (pin) {
           const tip = symbolTransform(pin.x, pin.y, p);
-          const bx = pin.x - pin.length * Math.cos(pin.angle * Math.PI / 180);
-          const by = pin.y - pin.length * Math.sin(pin.angle * Math.PI / 180);
+          const bx = pin.x + pin.length * Math.cos(pin.angle * Math.PI / 180);
+          const by = pin.y + pin.length * Math.sin(pin.angle * Math.PI / 180);
           const base = symbolTransform(bx, by, p);
           growBox(box, tip.x, tip.y);
           growBox(box, base.x, base.y);
@@ -440,9 +440,11 @@
   Renderer.prototype.drawPin = function (pin, p, lib) {
     if (pin.hide) return;
     const ctx = this.ctx;
+    // The pin's (at) point is the connection tip; the angle points inward toward
+    // the body, so the body end is tip + length·(cos, sin).
     const rad = pin.angle * Math.PI / 180;
-    const bx = pin.x - pin.length * Math.cos(rad);
-    const by = pin.y - pin.length * Math.sin(rad);
+    const bx = pin.x + pin.length * Math.cos(rad);
+    const by = pin.y + pin.length * Math.sin(rad);
     const tip = symbolTransform(pin.x, pin.y, p);
     const base = symbolTransform(bx, by, p);
 
@@ -466,69 +468,108 @@
     }
   };
 
-  // Draw text centred at (x,y). `owner` lets callers hit-test later; unused here.
-  Renderer.prototype.drawFieldText = function (text, x, y, angle, color, sizeMm, owner) {
+  // --- text (Hershey single-stroke, KiCad-like) -----------------------------
+
+  // Read font size (mm) from a node's (effects (font (size h w))).
+  function fieldSize(node) {
+    const eff = M.firstChild(node, 'effects');
+    if (!eff) return 1.27;
+    const font = M.firstChild(eff, 'font');
+    if (!font) return 1.27;
+    const size = M.firstChild(font, 'size');
+    return size ? M.num(size.children[1]) : 1.27;
+  }
+
+  // Read (effects ... (justify left|right|top|bottom ...)) into {h, v}.
+  function parseJustify(node) {
+    const eff = M.firstChild(node, 'effects');
+    const out = { h: null, v: null };
+    if (!eff) return out;
+    const j = M.firstChild(eff, 'justify');
+    if (!j) return out;
+    j.children.slice(1).forEach(function (c) {
+      if (c.kind !== 'atom') return;
+      if (c.value === 'left' || c.value === 'right') out.h = c.value;
+      else if (c.value === 'top' || c.value === 'bottom') out.v = c.value;
+    });
+    return out;
+  }
+
+  // Core stroke-text drawer. opts: {size, angle, color, hjustify, vjustify, width}
+  Renderer.prototype.drawStrokeText = function (text, x, y, opts) {
+    if (text === '' || text == null) return;
+    const polys = global.StrokeFont.polylines(String(text), {
+      x: x, y: y,
+      size: opts.size || 1.27,
+      angle: opts.angle || 0,
+      hjustify: opts.hjustify || 'center',
+      vjustify: opts.vjustify || 'center',
+    });
     const ctx = this.ctx;
-    const s = this.worldToScreen(x, y);
-    const px = Math.max(7, sizeMm * this.view.scale);
-    ctx.save();
-    ctx.translate(s.x, s.y);
-    if (angle === 90 || angle === 270) ctx.rotate(-Math.PI / 2);
-    ctx.fillStyle = color;
-    ctx.font = px + 'px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, 0, 0);
-    ctx.restore();
+    ctx.strokeStyle = opts.color || COLORS.text;
+    ctx.lineWidth = Math.max(1, (opts.width || 0.12) * this.view.scale);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (let i = 0; i < polys.length; i++) {
+      const p = polys[i];
+      ctx.beginPath();
+      for (let j = 0; j < p.length; j++) {
+        const s = this.worldToScreen(p[j].x, p[j].y);
+        if (j === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      }
+      ctx.stroke();
+    }
+  };
+
+  // Symbol fields / pin labels: centred by default.
+  Renderer.prototype.drawFieldText = function (text, x, y, angle, color, sizeMm, owner) {
+    this.drawStrokeText(text, x, y, {
+      size: sizeMm, angle: angle, color: color, hjustify: 'center', vjustify: 'center',
+    });
   };
 
   Renderer.prototype.drawLabel = function (node, color, kind) {
     const at = M.readAt(node);
     const text = node.children[1] ? node.children[1].value : '';
     if (!at) return;
-    const ctx = this.ctx;
-    const s = this.worldToScreen(at.x, at.y);
-    const px = Math.max(8, 1.27 * this.view.scale);
-    ctx.save();
-    ctx.translate(s.x, s.y);
-    if (at.angle === 90 || at.angle === 270) ctx.rotate(-Math.PI / 2);
-    ctx.fillStyle = color;
-    ctx.font = px + 'px sans-serif';
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = (at.angle === 180) ? 'right' : 'left';
-    // Small anchor square marks the attachment point.
-    ctx.fillRect(-1.5, -1.5, 3, 3);
-    const pad = 4;
-    ctx.fillText(text, ctx.textAlign === 'right' ? -pad : pad, 0);
-    ctx.restore();
+    const j = parseJustify(node);
+    const size = fieldSize(node);
+    const hj = j.h || 'left';
+    const vj = j.v || 'center';
+    // For global / hierarchical labels, outline the text so they read distinctly.
+    if (kind !== 'local') {
+      const w = global.StrokeFont.widthMm(text, size);
+      const pad = size * 0.5;
+      const ctx = this.ctx;
+      const cx = at.x, cy = at.y;
+      // Rough box centred on the text, aligned to the anchor by justify.
+      let x0 = cx, x1 = cx + w;
+      if (hj === 'center') { x0 = cx - w / 2; x1 = cx + w / 2; }
+      else if (hj === 'right') { x0 = cx - w; x1 = cx; }
+      const y0 = cy - size * 0.9, y1 = cy + size * 0.9;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(1, 0.12 * this.view.scale);
+      const a = this.worldToScreen(x0 - pad, y0), b = this.worldToScreen(x1 + pad, y1);
+      ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    }
+    this.drawStrokeText(text, at.x, at.y, {
+      size: size, angle: at.angle, color: color, hjustify: hj, vjustify: vj,
+    });
   };
 
   Renderer.prototype.drawText = function (node) {
     const at = M.readAt(node);
     const text = node.children[1] ? node.children[1].value : '';
     if (!at) return;
-    const ctx = this.ctx;
-    const eff = M.firstChild(node, 'effects');
-    let sizeMm = 1.27;
-    if (eff) {
-      const font = M.firstChild(eff, 'font');
-      if (font) {
-        const size = M.firstChild(font, 'size');
-        if (size) sizeMm = M.num(size.children[1]);
-      }
-    }
-    const s = this.worldToScreen(at.x, at.y);
-    ctx.save();
-    ctx.translate(s.x, s.y);
-    if (at.angle === 90 || at.angle === 270) ctx.rotate(-Math.PI / 2);
-    ctx.fillStyle = COLORS.text;
-    ctx.font = Math.max(8, sizeMm * this.view.scale) + 'px sans-serif';
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
+    const size = fieldSize(node);
+    const j = parseJustify(node);
+    const self = this;
     text.split('\n').forEach(function (line, i) {
-      ctx.fillText(line, 0, i * sizeMm * 1.3);
+      self.drawStrokeText(line, at.x, at.y + i * size * 1.5, {
+        size: size, angle: at.angle, color: COLORS.text,
+        hjustify: j.h || 'left', vjustify: j.v || 'top',
+      });
     });
-    ctx.restore();
   };
 
   Renderer.prototype.drawSheet = function (node) {
@@ -541,14 +582,12 @@
     ctx.strokeStyle = COLORS.sheet;
     ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
     ctx.strokeRect(s.x, s.y, w * this.view.scale, h * this.view.scale);
-    // Sheet name / file from properties.
-    const props = M.childLists(node, 'property');
-    props.forEach(function (pr, i) {
+    const self = this;
+    M.childLists(node, 'property').forEach(function (pr, i) {
       const val = pr.children[2] ? pr.children[2].value : '';
-      ctx.fillStyle = COLORS.sheet;
-      ctx.font = Math.max(8, 1.27 * this.view.scale) + 'px sans-serif';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(val, s.x, s.y - 2 - i * (1.6 * this.view.scale));
+      self.drawStrokeText(val, at.x, at.y - 1 - i * 1.6, {
+        size: 1.27, angle: 0, color: COLORS.sheet, hjustify: 'left', vjustify: 'bottom',
+      });
     });
   };
 
