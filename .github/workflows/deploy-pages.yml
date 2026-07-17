@@ -7,6 +7,7 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches:
+      - main
       - claude/kicad-sch-viewer-editor-etvajl
   workflow_dispatch:
 
