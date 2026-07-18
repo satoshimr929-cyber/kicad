@@ -47,13 +47,41 @@ try {
     { cwd: srcDir, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
 } catch (_) { /* not a git checkout (e.g. mock library in tests) */ }
 
-const files = fs.readdirSync(srcDir).filter(function (f) { return f.endsWith('.kicad_sym'); }).sort();
+// Search recursively — the upstream repo layout has moved files between the
+// root and subdirectories across releases.
+function findSymbolFiles(dir) {
+  const out = [];
+  (function walk(d) {
+    fs.readdirSync(d, { withFileTypes: true }).forEach(function (ent) {
+      if (ent.name === '.git') return;
+      const p = path.join(d, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (ent.name.endsWith('.kicad_sym')) out.push(p);
+    });
+  })(dir);
+  return out.sort();
+}
+
+const files = findSymbolFiles(srcDir);
+if (files.length === 0) {
+  console.error('No .kicad_sym files found under ' + srcDir + ' — top-level contents:');
+  fs.readdirSync(srcDir).slice(0, 40).forEach(function (e) { console.error('  ' + e); });
+  process.exit(1);
+}
+
 const symbols = [];
+const seenLibs = {};
 let failed = 0;
 
-files.forEach(function (file) {
+files.forEach(function (fullPath) {
+  const file = path.basename(fullPath);
   const lib = file.replace(/\.kicad_sym$/, '');
-  const text = fs.readFileSync(path.join(srcDir, file), 'utf8');
+  if (seenLibs[lib]) {
+    console.error('DUPLICATE lib name skipped: ' + fullPath);
+    return;
+  }
+  seenLibs[lib] = true;
+  const text = fs.readFileSync(fullPath, 'utf8');
   let root;
   try {
     root = S.parse(text);
@@ -62,7 +90,7 @@ files.forEach(function (file) {
     failed++;
     return;
   }
-  fs.copyFileSync(path.join(srcDir, file), path.join(outDir, file));
+  fs.copyFileSync(fullPath, path.join(outDir, file));
 
   // Index derived (extends) symbols too; their own properties carry ref/desc,
   // falling back to the parent's when the derived symbol doesn't override.
@@ -92,7 +120,7 @@ files.forEach(function (file) {
 const index = {
   version: version,
   generated: new Date().toISOString(),
-  libs: files.length - failed,
+  libs: Object.keys(seenLibs).length - failed,
   count: symbols.length,
   symbols: symbols,
 };
