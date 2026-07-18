@@ -326,6 +326,29 @@
     propNode.children[2] = atomNode(value, true);
   };
 
+  // Set a property by key, creating the node if the symbol lacks it. New
+  // properties are placed at the symbol origin and hidden on the sheet,
+  // matching how KiCad adds Footprint/Datasheet fields.
+  Schematic.prototype.ensureProperty = function (symbolNode, key, value) {
+    const existing = childLists(symbolNode, 'property').find(function (p) {
+      return p.children[1] && p.children[1].value === key;
+    });
+    if (existing) {
+      this.setProperty(existing, value);
+      return existing;
+    }
+    const pl = this.placement(symbolNode);
+    const node = global.SExpr.parse(
+      '(property "' + global.SExpr.escapeString(key) + '" "' + global.SExpr.escapeString(value) + '"' +
+      ' (at ' + fmt(pl.x) + ' ' + fmt(pl.y) + ' 0)' +
+      ' (effects (font (size 1.27 1.27)) hide))');
+    const props = childLists(symbolNode, 'property');
+    const anchor = props.length ? props[props.length - 1] : firstChild(symbolNode, 'at');
+    const idx = anchor ? symbolNode.children.indexOf(anchor) : -1;
+    symbolNode.children.splice(idx >= 0 ? idx + 1 : symbolNode.children.length, 0, node);
+    return node;
+  };
+
   global.KiModel = {
     head: head,
     childLists: childLists,

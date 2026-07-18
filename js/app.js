@@ -1107,6 +1107,50 @@
     ]);
   }
 
+  // KiCad standard footprint name suggestions per reference prefix, offered
+  // in the Footprint field's datalist (free text is still allowed).
+  const FOOTPRINT_SUGGESTIONS = {
+    R: ['Resistor_SMD:R_0402_1005Metric', 'Resistor_SMD:R_0603_1608Metric',
+        'Resistor_SMD:R_0805_2012Metric', 'Resistor_SMD:R_1206_3216Metric',
+        'Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal'],
+    C: ['Capacitor_SMD:C_0402_1005Metric', 'Capacitor_SMD:C_0603_1608Metric',
+        'Capacitor_SMD:C_0805_2012Metric', 'Capacitor_SMD:C_1206_3216Metric',
+        'Capacitor_THT:CP_Radial_D5.0mm_P2.50mm'],
+    L: ['Inductor_SMD:L_0603_1608Metric', 'Inductor_SMD:L_0805_2012Metric'],
+    FB: ['Inductor_SMD:L_0603_1608Metric', 'Inductor_SMD:L_0805_2012Metric'],
+    D: ['Diode_SMD:D_SOD-123', 'Diode_SMD:D_SOD-323',
+        'Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal',
+        'LED_SMD:LED_0603_1608Metric', 'LED_SMD:LED_0805_2012Metric',
+        'LED_THT:LED_D5.0mm'],
+    Q: ['Package_TO_SOT_SMD:SOT-23', 'Package_TO_SOT_SMD:SOT-223-3_TabPin2',
+        'Package_TO_SOT_THT:TO-92_Inline', 'Package_TO_SOT_THT:TO-220-3_Vertical'],
+    U: ['Package_SO:SOIC-8_3.9x4.9mm_P1.27mm', 'Package_SO:SOIC-14_3.9x8.7mm_P1.27mm',
+        'Package_DIP:DIP-8_W7.62mm', 'Package_DIP:DIP-14_W7.62mm',
+        'Package_TO_SOT_SMD:SOT-23-5', 'Package_TO_SOT_SMD:SOT-223-3_TabPin2'],
+    J: ['Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical',
+        'Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical',
+        'Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical',
+        'Connector_PinHeader_2.54mm:PinHeader_1x06_P2.54mm_Vertical',
+        'Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical'],
+    Y: ['Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm', 'Crystal:Crystal_HC49-4H_Vertical'],
+    SW: ['Button_Switch_SMD:SW_SPST_TL3342', 'Button_Switch_THT:SW_PUSH_6mm'],
+    F: ['Fuse:Fuse_0603_1608Metric', 'Fuse:Fuse_1206_3216Metric'],
+    TP: ['TestPoint:TestPoint_Pad_D1.5mm', 'TestPoint:TestPoint_Loop_D2.60mm_Drill1.4mm'],
+    BZ: ['Buzzer_Beeper:Buzzer_12x9.5RM7.6'],
+    K: ['Relay_THT:Relay_SPDT_Finder_36.11'],
+  };
+
+  function fillFootprintDatalist(refValue) {
+    const dl = document.getElementById('fpList');
+    dl.innerHTML = '';
+    const prefix = (refValue || '').replace(/[^A-Za-z].*$/, '');
+    (FOOTPRINT_SUGGESTIONS[prefix] || []).forEach(function (fp) {
+      const opt = document.createElement('option');
+      opt.value = fp;
+      dl.appendChild(opt);
+    });
+  }
+
   function renderSymbolProps(c, sym) {
     const pl = state.schem.placement(sym);
     const lidNode = M.firstChild(sym, 'lib_id');
@@ -1115,16 +1159,36 @@
     const refProp = props.find(function (p) { return p.key === 'Reference'; });
 
     const title = titleRow(c, refProp ? refProp.value : 'シンボル', libId);
+    fillFootprintDatalist(refProp ? refProp.value : '');
 
+    let sawFootprint = false;
     props.forEach(function (p) {
-      if (p.key !== 'Reference' && p.key !== 'Value' && !p.value) return;
-      c.appendChild(fieldRow(p.key, p.value, function (val) {
+      const isFootprint = p.key === 'Footprint';
+      if (isFootprint) sawFootprint = true;
+      // Reference/Value/Footprint always show; other fields only when non-empty.
+      if (p.key !== 'Reference' && p.key !== 'Value' && !isFootprint && !p.value) return;
+      const row = fieldRow(p.key, p.value, function (val) {
         state.schem.setProperty(p.node, val);
         renderer.render();
         commitHistory();
-        if (p.key === 'Reference') title.textContent = val;
-      }));
+        if (p.key === 'Reference') { title.textContent = val; fillFootprintDatalist(val); }
+      });
+      if (isFootprint) row.querySelector('input').setAttribute('list', 'fpList');
+      c.appendChild(row);
     });
+
+    // Symbols placed from the built-in library have no Footprint property yet:
+    // offer the field anyway and create the property on first commit.
+    if (!sawFootprint) {
+      const row = fieldRow('Footprint', '', function (val) {
+        if (!val) return;
+        state.schem.ensureProperty(sym, 'Footprint', val);
+        renderer.render();
+        commitHistory();
+      });
+      row.querySelector('input').setAttribute('list', 'fpList');
+      c.appendChild(row);
+    }
 
     const sec = document.createElement('div');
     sec.className = 'section-label';
