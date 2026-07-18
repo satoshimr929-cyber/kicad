@@ -115,9 +115,13 @@
       </div>
       <div id="partList" class="part-list"></div>
       <div class="modal-foot">
+        <button id="stdlibBtn" class="btn">標準ライブラリを読み込む</button>
         <label class="btn" for="symImport">.kicad_sym を取り込む…</label>
         <input id="symImport" type="file" accept=".kicad_sym" hidden>
       </div>
+      <p class="prop-sub stdlib-note" id="stdlibNote">
+        標準ライブラリ: KiCad Symbol Libraries (CC-BY-SA 4.0)
+      </p>
     </div>
   </div>
 
@@ -128,6 +132,7 @@
   <script src="js/history.js"></script>
   <script src="js/library.js"></script>
   <script src="js/parts.js"></script>
+  <script src="js/stdlib.js"></script>
   <script src="js/hershey.js"></script>
   <script src="js/strokefont.js"></script>
   <script src="js/renderer.js"></script>

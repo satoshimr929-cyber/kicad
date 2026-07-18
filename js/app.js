@@ -119,15 +119,49 @@
   }
 
   // Show/hide part-item cards by whether their label/libId contains the query
-  // (case-insensitive); an empty query shows everything.
+  // (case-insensitive); an empty query shows everything. Once the standard
+  // library index is loaded, a 2+ character query also searches all of it.
   function applyPartFilter() {
     const q = partSearch.value.trim().toLowerCase();
     let visible = 0;
-    Array.prototype.forEach.call(partList.querySelectorAll('.part-item'), function (el) {
+    Array.prototype.forEach.call(partList.querySelectorAll('.part-item:not(.std)'), function (el) {
       const match = !q || el.dataset.search.toLowerCase().indexOf(q) >= 0;
       el.classList.toggle('filtered-out', !match);
       if (match) visible++;
     });
+
+    Array.prototype.forEach.call(
+      partList.querySelectorAll('.std-divider, .part-item.std'),
+      function (el) { el.remove(); });
+    if (stdIndex && q.length >= 2) {
+      const matches = [];
+      for (let i = 0; i < stdIndex.symbols.length && matches.length < 100; i++) {
+        const s = stdIndex.symbols[i]; // [lib, name, refPrefix, description]
+        if ((s[0] + ':' + s[1] + ' ' + s[3]).toLowerCase().indexOf(q) >= 0) matches.push(s);
+      }
+      if (matches.length) {
+        const div = document.createElement('div');
+        div.className = 'std-divider';
+        div.textContent = '標準ライブラリ (' + matches.length + (matches.length >= 100 ? '+' : '') + ' 件)';
+        partList.appendChild(div);
+        matches.forEach(function (s) {
+          const el = document.createElement('div');
+          el.className = 'part-item std';
+          el.title = s[0] + ':' + s[1];
+          const nm = document.createElement('span');
+          nm.textContent = s[1];
+          const lb = document.createElement('span');
+          lb.className = 'std-lib';
+          lb.textContent = s[0] + (s[3] ? ' — ' + s[3] : '');
+          el.appendChild(nm);
+          el.appendChild(lb);
+          el.addEventListener('click', function () { choosePartStd(s[0], s[1]); });
+          partList.appendChild(el);
+        });
+        visible += matches.length;
+      }
+    }
+
     let note = partList.querySelector('.no-match');
     if (visible === 0) {
       if (!note) {
@@ -141,6 +175,36 @@
     }
   }
   partSearch.addEventListener('input', applyPartFilter);
+
+  // --- standard library (bundled KiCad symbol libraries) --------------------
+
+  const stdlibBtn = document.getElementById('stdlibBtn');
+  let stdIndex = null;
+
+  stdlibBtn.addEventListener('click', function () {
+    if (stdIndex) return;
+    stdlibBtn.disabled = true;
+    stdlibBtn.textContent = '読み込み中…';
+    window.KiStdLib.loadIndex().then(function (ix) {
+      stdIndex = ix;
+      stdlibBtn.textContent = '標準ライブラリ: ' + ix.count + ' シンボル';
+      applyPartFilter();
+      partSearch.focus();
+    }).catch(function (err) {
+      stdlibBtn.disabled = false;
+      stdlibBtn.textContent = '標準ライブラリを読み込む';
+      alert('標準ライブラリを読み込めませんでした。\n' + err.message);
+    });
+  });
+
+  function choosePartStd(lib, name) {
+    window.KiStdLib.loadSymbol(lib, name).then(function (meta) {
+      importedParts[lib + ':' + name] = meta;
+      choosePart(lib + ':' + name);
+    }).catch(function (err) {
+      alert('シンボルを読み込めませんでした。\n' + err.message);
+    });
+  }
 
   function openPartModal() {
     if (!state.schem) { alert('先にファイルを開くかサンプルを読み込んでください。'); return; }
@@ -983,6 +1047,21 @@
         });
       });
     }
+    // Carry the library's default footprint into the instance, KiCad-style.
+    let fpSexpr = '';
+    try {
+      const defRoot = S.parse(meta.def);
+      const fp = M.childLists(defRoot, 'property').find(function (p) {
+        return p.children[1] && p.children[1].value === 'Footprint';
+      });
+      const fpVal = fp && fp.children[2] ? fp.children[2].value : '';
+      if (fpVal) {
+        fpSexpr = '  (property "Footprint" "' + S.escapeString(fpVal) + '"' +
+          ' (at ' + f(x) + ' ' + f(y) + ' 0)\n' +
+          '    (effects (font (size 1.27 1.27)) hide))\n';
+      }
+    } catch (_) { /* def without a footprint default */ }
+
     const ref = nextRef(meta.ref);
     const node = addTop(S.parse(
       '(symbol (lib_id "' + libId + '") (at ' + f(x) + ' ' + f(y) + ' 0) (unit 1)\n' +
@@ -992,6 +1071,7 @@
       '    (effects (font (size 1.27 1.27)) (justify left)))\n' +
       '  (property "Value" "' + meta.value + '" (at ' + f(x + 3.81) + ' ' + f(y + 1.27) + ' 0)\n' +
       '    (effects (font (size 1.27 1.27)) (justify left)))\n' +
+      fpSexpr +
       pinsSexpr +
       ')'));
     renderer.invalidate();

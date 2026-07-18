@@ -15,6 +15,7 @@ const APP_SHELL = [
   'js/history.js',
   'js/library.js',
   'js/parts.js',
+  'js/stdlib.js',
   'js/hershey.js',
   'js/strokefont.js',
   'js/renderer.js',

@@ -31,6 +31,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Fetch KiCad symbol libraries
+        uses: actions/checkout@v4
+        with:
+          repository: KiCad/kicad-symbols
+          path: kicad-symbols
+          fetch-depth: 1
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:
@@ -42,6 +49,8 @@ jobs:
           mkdir -p _site
           cp index.html manifest.webmanifest sw.js _site/
           cp -r css js samples icons _site/
+          node tools/build-lib-index.js kicad-symbols _site/library
+          du -sh _site
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

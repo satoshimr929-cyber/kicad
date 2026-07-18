@@ -108,6 +108,15 @@ select.btn { padding: 6px 8px; }
 .part-search-wrap input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37,99,235,.15); }
 .part-list.empty-note { display: block; }
 .part-list .no-match { grid-column: 1 / -1; text-align: center; color: var(--muted); font-size: 13px; padding: 20px 0; }
+.part-list .std-divider {
+  grid-column: 1 / -1;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--muted); border-top: 1px solid var(--border);
+  padding-top: 8px; margin-top: 4px;
+}
+.part-item.std { text-align: left; }
+.part-item.std .std-lib { display: block; font-size: 11px; color: var(--muted); }
+.stdlib-note { padding: 0 14px 10px; margin: 0; font-size: 11px; }
 
 .field-modal-hint { padding: 0 14px; margin: 10px 0; line-height: 1.6; }
 .field-list {
