@@ -190,7 +190,8 @@
         const len = firstChild(node, 'length');
         const nameN = firstChild(node, 'name');
         const numN = firstChild(node, 'number');
-        const args = atomArgs(node); // [electrical_type, graphic_style]
+        const args = atomArgs(node); // [electrical_type, graphic_style, ('hide')]
+        const style = args[1] && args[1].value !== 'hide' ? args[1].value : 'line';
         return {
           type: 'pin',
           x: at ? at.x : 0,
@@ -199,6 +200,8 @@
           length: len ? num(len.children[1]) : 2.54,
           name: nameN ? nameN.children[1].value : '',
           number: numN ? numN.children[1].value : '',
+          etype: args[0] ? args[0].value : 'passive',
+          style: style,
           hide: node.children.some(function (c) { return c.kind === 'atom' && c.value === 'hide'; }),
         };
       }

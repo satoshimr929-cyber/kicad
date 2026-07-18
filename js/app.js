@@ -447,7 +447,7 @@
   const drag = {
     mode: null, startX: 0, startY: 0, panX0: 0, panY0: 0,
     moved: false, pointerType: 'mouse', tapItem: null,
-    origs: null, startWorld: null, addToSel: false,
+    origs: null, startWorld: null, addToSel: false, middle: false,
   };
   const pointers = new Map(); // pointerId -> {x, y} client coords
   let pinch = null;
@@ -457,9 +457,31 @@
     return renderer.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
   }
 
+  // Stop the browser's middle-click autoscroll so it can pan instead.
+  canvas.addEventListener('mousedown', function (e) {
+    if (e.button === 1) e.preventDefault();
+  });
+
   canvas.addEventListener('pointerdown', function (e) {
     if (!state.schem) return;
+    // Middle button always pans, KiCad-style, regardless of the active tool.
+    if (e.pointerType === 'mouse' && e.button === 1) {
+      e.preventDefault();
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      drag.startX = e.clientX;
+      drag.startY = e.clientY;
+      drag.moved = false;
+      drag.middle = true;
+      drag.tapItem = null;
+      drag.mode = 'pan';
+      drag.panX0 = renderer.view.panX;
+      drag.panY0 = renderer.view.panY;
+      canvas.classList.add('grabbing');
+      return;
+    }
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    drag.middle = false;
     try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -583,7 +605,7 @@
     } else if (drag.mode === 'move' && drag.moved) {
       commitHistory();
       renderProps();
-    } else if (drag.mode && !drag.moved) {
+    } else if (drag.mode && !drag.moved && !drag.middle) {
       // A tap/click that did not drag.
       if (state.tool !== 'select') {
         handleToolTap(drag.startWorld);
@@ -637,7 +659,7 @@
 
   function allItems() {
     const out = state.schem.symbols().map(function (n) { return { kind: 'symbol', node: n }; });
-    WIRE_KINDS.concat(LABEL_KINDS, ['text', 'junction', 'no_connect']).forEach(function (k) {
+    WIRE_KINDS.concat(LABEL_KINDS, ['text', 'junction', 'no_connect', 'bus_entry']).forEach(function (k) {
       state.schem.items(k).forEach(function (n) { out.push({ kind: k, node: n }); });
     });
     return out;
@@ -1012,7 +1034,7 @@
 
   function kindLabel(kind) {
     return {
-      wire: '配線', bus: 'バス', polyline: '図形線',
+      wire: '配線', bus: 'バス', polyline: '図形線', bus_entry: 'バスエントリ',
       label: 'ラベル', global_label: 'グローバルラベル',
       hierarchical_label: '階層ラベル', text: 'テキスト',
       junction: 'ジャンクション', no_connect: '未接続マーク',
@@ -1232,6 +1254,7 @@
     view: renderer.view,
     tool: function () { return state.tool; },
     placePart: function () { return state.placePart; },
+    dangling: function () { return renderer._danglingCount; },
     selCount: function () { return state.sel.length; },
     selKind: function () { return state.sel.length ? state.sel[0].kind : null; },
     text: function () { return state.schem ? serializeNow() : ''; },

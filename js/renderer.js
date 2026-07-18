@@ -11,11 +11,12 @@
 
   const M = global.KiModel;
 
-  // Classic KiCad "light" palette.
+  // KiCad default ("KiCad Classic") light palette.
   const COLORS = {
     background: '#ffffff',
-    grid: '#e6e6e6',
+    grid: '#b4b4b4',
     page: '#c8c8c8',
+    frame: '#840000',
     wire: '#008000',
     bus: '#000080',
     junction: '#008000',
@@ -29,10 +30,10 @@
     value: '#008484',
     field: '#808080',
     label: '#000000',
-    globalLabel: '#a02020',
-    hierLabel: '#a02020',
+    globalLabel: '#840000',
+    hierLabel: '#840000',
     text: '#000000',
-    sheet: '#a02020',
+    sheet: '#840000',
     selection: '#ff8c00',
   };
 
@@ -50,7 +51,17 @@
     // field (Reference, Value, Footprint, ...) is drawn on the sheet. Null
     // means "show everything" (used when no app-level preference is set).
     this.fieldFilter = null;
+    // While the selection-glow pass redraws selected items, `hl` overrides
+    // every stroke/fill colour and `hlBoost` widens every line, giving the
+    // KiCad-style translucent halo around selected geometry.
+    this.hl = null;
+    this.hlBoost = 0;
   }
+
+  // Line width in px for a nominal mm width, honouring the glow boost.
+  Renderer.prototype.lw = function (mm) {
+    return Math.max(1, mm * this.view.scale) + (this.hlBoost || 0);
+  };
 
   Renderer.prototype.setSchematic = function (schem) {
     this.schem = schem;
@@ -180,6 +191,13 @@
         if (at) growBox(box, at.x, at.y);
       });
     });
+    self.schem.items('bus_entry').forEach(function (node) {
+      const at = M.readAt(node);
+      if (!at) return;
+      const sz = M.firstChild(node, 'size');
+      growBox(box, at.x, at.y);
+      growBox(box, at.x + (sz ? M.num(sz.children[1]) : 2.54), at.y + (sz ? M.num(sz.children[2]) : 2.54));
+    });
     self.schem.items('sheet').forEach(function (sh) {
       const at = M.readAt(sh);
       const size = M.firstChild(sh, 'size');
@@ -244,10 +262,12 @@
 
     if (!this.schem) return;
     if (this.showGrid) this.drawGrid(rect);
+    this.drawPageFrame();
 
     const self = this;
     // Wires / buses.
     this.schem.items('bus').forEach(function (w) { self.drawWire(w, COLORS.bus, 0.3); });
+    this.schem.items('bus_entry').forEach(function (b) { self.drawBusEntry(b); });
     this.schem.items('wire').forEach(function (w) { self.drawWire(w, COLORS.wire, 0.15); });
     this.schem.items('polyline').forEach(function (w) { self.drawWire(w, COLORS.text, 0.15); });
 
@@ -265,14 +285,38 @@
     this.schem.items('text').forEach(function (t) { self.drawText(t); });
     this.schem.items('sheet').forEach(function (sh) { self.drawSheet(sh); });
 
-    if (this.selection && this.selection.length) {
-      for (let i = 0; i < this.selection.length; i++) {
-        const it = this.selection[i];
-        this.drawSelectionBox(this.itemBBox(it.kind, it.node));
-      }
-    }
+    this.drawDangling();
+
+    if (this.selection && this.selection.length) this.drawSelectionGlow();
     if (this.rubber) this.drawRubber();
     if (this.draft) this.drawDraft();
+  };
+
+  // Re-draw every selected item in a translucent, widened highlight colour —
+  // the KiCad-style selection halo.
+  Renderer.prototype.drawSelectionGlow = function () {
+    this.hl = 'rgba(2, 120, 220, 0.45)';
+    this.hlBoost = 4;
+    const self = this;
+    this.selection.forEach(function (it) {
+      const n = it.node;
+      switch (it.kind) {
+        case 'symbol': self.drawSymbol(n); break;
+        case 'wire': self.drawWire(n, COLORS.wire, 0.15); break;
+        case 'bus': self.drawWire(n, COLORS.bus, 0.3); break;
+        case 'polyline': self.drawWire(n, COLORS.text, 0.15); break;
+        case 'bus_entry': self.drawBusEntry(n); break;
+        case 'junction': self.drawJunction(n); break;
+        case 'no_connect': self.drawNoConnect(n); break;
+        case 'label': self.drawLabel(n, COLORS.label, 'local'); break;
+        case 'global_label': self.drawLabel(n, COLORS.globalLabel, 'global'); break;
+        case 'hierarchical_label': self.drawLabel(n, COLORS.hierLabel, 'hier'); break;
+        case 'text': self.drawText(n); break;
+        default: self.drawSelectionBox(self.itemBBox(it.kind, n)); break;
+      }
+    });
+    this.hl = null;
+    this.hlBoost = 0;
   };
 
   Renderer.prototype.drawDraft = function () {
@@ -293,35 +337,138 @@
     ctx.fillRect(a.x - 3, a.y - 3, 6, 6);
   };
 
+  // KiCad-style dot grid: a small dot on every grid intersection, with the
+  // step doubled until dots are at least ~8px apart so zooming out stays clean.
   Renderer.prototype.drawGrid = function (rect) {
     const ctx = this.ctx;
-    const step = 2.54; // mm
-    const px = step * this.view.scale;
-    if (px < 6) return; // too dense to be useful
+    let step = 2.54; // mm
+    while (step * this.view.scale < 8) step *= 2;
+    if (step * this.view.scale > rect.width) return;
     const start = this.screenToWorld(0, 0);
     const end = this.screenToWorld(rect.width, rect.height);
-    ctx.strokeStyle = COLORS.grid;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
+    ctx.fillStyle = COLORS.grid;
+    const r = this.view.scale >= 8 ? 1 : 0.75; // dot radius px
     for (let x = Math.ceil(start.x / step) * step; x < end.x; x += step) {
-      const s = this.worldToScreen(x, 0);
-      ctx.moveTo(s.x, 0);
-      ctx.lineTo(s.x, rect.height);
+      for (let y = Math.ceil(start.y / step) * step; y < end.y; y += step) {
+        const s = this.worldToScreen(x, y);
+        ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+      }
     }
-    for (let y = Math.ceil(start.y / step) * step; y < end.y; y += step) {
-      const s = this.worldToScreen(0, y);
-      ctx.moveTo(0, s.y);
-      ctx.lineTo(rect.width, s.y);
+  };
+
+  // --- page frame & title block ---------------------------------------------
+
+  const PAPER_SIZES = { // landscape [width, height] in mm
+    A5: [210, 148], A4: [297, 210], A3: [420, 297],
+    A2: [594, 420], A1: [841, 594], A0: [1189, 841],
+  };
+
+  Renderer.prototype.drawPageFrame = function () {
+    const ctx = this.ctx;
+    const paperNode = M.firstChild(this.schem.root, 'paper');
+    let size = 'A4', portrait = false;
+    if (paperNode) {
+      if (paperNode.children[1]) size = paperNode.children[1].value;
+      portrait = paperNode.children.some(function (c) {
+        return c.kind === 'atom' && c.value === 'portrait';
+      });
     }
-    ctx.stroke();
+    const wh = PAPER_SIZES[size] || PAPER_SIZES.A4;
+    const W = portrait ? wh[1] : wh[0];
+    const H = portrait ? wh[0] : wh[1];
+    const m = 10; // border band width, mm
+    const self = this;
+
+    function rect(x0, y0, x1, y1, w) {
+      const a = self.worldToScreen(x0, y0), b = self.worldToScreen(x1, y1);
+      ctx.lineWidth = self.lw(w);
+      ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    }
+    function line(x0, y0, x1, y1) {
+      const a = self.worldToScreen(x0, y0), b = self.worldToScreen(x1, y1);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+
+    ctx.strokeStyle = COLORS.frame;
+    rect(0, 0, W, H, 0.1);
+    rect(m, m, W - m, H - m, 0.18);
+
+    // Zone reference divisions (columns 1,2,3... / rows A,B,C...).
+    const innerW = W - 2 * m, innerH = H - 2 * m;
+    const nx = Math.max(1, Math.round(innerW / 50));
+    const ny = Math.max(1, Math.round(innerH / 50));
+    ctx.lineWidth = this.lw(0.1);
+    for (let i = 1; i < nx; i++) {
+      const x = m + i * innerW / nx;
+      line(x, 0, x, m);
+      line(x, H - m, x, H);
+    }
+    for (let i = 1; i < ny; i++) {
+      const y = m + i * innerH / ny;
+      line(0, y, m, y);
+      line(W - m, y, W, y);
+    }
+    for (let i = 0; i < nx; i++) {
+      const cx = m + (i + 0.5) * innerW / nx;
+      this.drawStrokeText(String(i + 1), cx, m / 2, { size: 1.27, color: COLORS.frame });
+      this.drawStrokeText(String(i + 1), cx, H - m / 2, { size: 1.27, color: COLORS.frame });
+    }
+    for (let i = 0; i < ny; i++) {
+      const cy = m + (i + 0.5) * innerH / ny;
+      const ch = String.fromCharCode(65 + (i % 26));
+      this.drawStrokeText(ch, m / 2, cy, { size: 1.27, color: COLORS.frame });
+      this.drawStrokeText(ch, W - m / 2, cy, { size: 1.27, color: COLORS.frame });
+    }
+
+    // Title block, bottom-right inside the inner border.
+    const tb = M.firstChild(this.schem.root, 'title_block');
+    function tbVal(name) {
+      if (!tb) return '';
+      const n = M.firstChild(tb, name);
+      return n && n.children[1] ? n.children[1].value : '';
+    }
+    const tw = 110, th = 20;
+    const x1 = W - m, y1 = H - m, x0 = x1 - tw, y0 = y1 - th;
+    ctx.strokeStyle = COLORS.frame;
+    rect(x0, y0, x1, y1, 0.18);
+    const rowCompanyB = y0 + 5;   // company row bottom
+    const rowMetaT = y1 - 6;      // meta row top
+    line(x0, rowCompanyB, x1, rowCompanyB);
+    line(x0, rowMetaT, x1, rowMetaT);
+    line(x0 + 40, rowMetaT, x0 + 40, y1);
+    line(x0 + 75, rowMetaT, x0 + 75, y1);
+
+    const opts = { size: 1.27, color: COLORS.frame, hjustify: 'left', vjustify: 'center' };
+    this.drawStrokeText(tbVal('company'), x0 + 2, (y0 + rowCompanyB) / 2, opts);
+    this.drawStrokeText(tbVal('title'), x0 + 2, (rowCompanyB + rowMetaT) / 2,
+      { size: 2.0, color: COLORS.frame, hjustify: 'left', vjustify: 'center' });
+    this.drawStrokeText('Date: ' + tbVal('date'), x0 + 2, (rowMetaT + y1) / 2, opts);
+    this.drawStrokeText('Rev: ' + tbVal('rev'), x0 + 42, (rowMetaT + y1) / 2, opts);
+    this.drawStrokeText(size, x0 + 77, (rowMetaT + y1) / 2, opts);
+  };
+
+  // Diagonal wire-to-bus entry stub: (bus_entry (at x y) (size dx dy)).
+  Renderer.prototype.drawBusEntry = function (node) {
+    const at = M.readAt(node);
+    if (!at) return;
+    const size = M.firstChild(node, 'size');
+    const dx = size ? M.num(size.children[1]) : 2.54;
+    const dy = size ? M.num(size.children[2]) : 2.54;
+    const ctx = this.ctx;
+    const a = this.worldToScreen(at.x, at.y);
+    const b = this.worldToScreen(at.x + dx, at.y + dy);
+    ctx.strokeStyle = this.hl || COLORS.wire;
+    ctx.lineWidth = this.lw(0.15);
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
   };
 
   Renderer.prototype.drawWire = function (node, color, widthMm) {
     const pts = M.readPts(node);
     if (pts.length < 2) return;
     const ctx = this.ctx;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1, widthMm * this.view.scale);
+    ctx.strokeStyle = this.hl || color;
+    ctx.lineWidth = this.lw(widthMm);
     ctx.lineCap = 'round';
     ctx.beginPath();
     for (let i = 0; i < pts.length; i++) {
@@ -336,9 +483,9 @@
     if (!at) return;
     const ctx = this.ctx;
     const s = this.worldToScreen(at.x, at.y);
-    ctx.fillStyle = COLORS.junction;
+    ctx.fillStyle = this.hl || COLORS.junction;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, Math.max(2, 0.5 * this.view.scale), 0, Math.PI * 2);
+    ctx.arc(s.x, s.y, Math.max(2, 0.5 * this.view.scale) + (this.hlBoost || 0), 0, Math.PI * 2);
     ctx.fill();
   };
 
@@ -348,8 +495,8 @@
     const ctx = this.ctx;
     const s = this.worldToScreen(at.x, at.y);
     const r = 0.635 * this.view.scale;
-    ctx.strokeStyle = COLORS.noConnect;
-    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.strokeStyle = this.hl || COLORS.noConnect;
+    ctx.lineWidth = this.lw(0.15);
     ctx.beginPath();
     ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y + r);
     ctx.moveTo(s.x - r, s.y + r); ctx.lineTo(s.x + r, s.y - r);
@@ -384,16 +531,16 @@
   Renderer.prototype.drawGraphic = function (g, p) {
     const ctx = this.ctx;
     const self = this;
-    ctx.strokeStyle = COLORS.symbol;
-    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.strokeStyle = this.hl || COLORS.symbol;
+    ctx.lineWidth = this.lw(0.15);
     ctx.lineJoin = 'round';
 
     function moveTo(pt) { const s = self.worldToScreen(pt.x, pt.y); ctx.moveTo(s.x, s.y); }
     function lineTo(pt) { const s = self.worldToScreen(pt.x, pt.y); ctx.lineTo(s.x, s.y); }
 
     function applyFill(fill) {
-      if (fill === 'background') { ctx.fillStyle = COLORS.symbolFill; ctx.fill(); }
-      else if (fill === 'outline') { ctx.fillStyle = COLORS.symbol; ctx.fill(); }
+      if (fill === 'background') { ctx.fillStyle = self.hl || COLORS.symbolFill; ctx.fill(); }
+      else if (fill === 'outline') { ctx.fillStyle = self.hl || COLORS.symbol; ctx.fill(); }
     }
 
     if (g.type === 'rectangle') {
@@ -436,8 +583,8 @@
     const b = symbolTransform(g.mid.x, g.mid.y, p);
     const c = symbolTransform(g.end.x, g.end.y, p);
     const ctx = this.ctx;
-    ctx.strokeStyle = COLORS.symbol;
-    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.strokeStyle = this.hl || COLORS.symbol;
+    ctx.lineWidth = this.lw(0.15);
 
     const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
     if (Math.abs(d) < 1e-9) {
@@ -482,20 +629,80 @@
 
     const st = this.worldToScreen(tip.x, tip.y);
     const sb = this.worldToScreen(base.x, base.y);
-    ctx.strokeStyle = COLORS.pin;
-    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.strokeStyle = this.hl || COLORS.pin;
+    ctx.lineWidth = this.lw(0.15);
     ctx.beginPath();
     ctx.moveTo(sb.x, sb.y); ctx.lineTo(st.x, st.y);
     ctx.stroke();
 
-    // Pin number near the pin body; pin name near the tip (unless hidden).
-    if (this.view.scale >= 6) {
-      const mid = { x: (tip.x + base.x) / 2, y: (tip.y + base.y) / 2 };
-      if (!lib.hidePinNumbers && pin.number && pin.number !== '~') {
-        this.drawFieldText(pin.number, mid.x, mid.y - 0.4, 0, COLORS.pinNumber, 1.0, null);
-      }
-      if (!lib.hidePinNames && pin.name && pin.name !== '~') {
-        this.drawFieldText(pin.name, tip.x, tip.y, 0, COLORS.pinName, 1.0, null);
+    // Direction from tip toward the body, in world/sheet coordinates.
+    const len = Math.hypot(base.x - tip.x, base.y - tip.y);
+    const dir = len > 1e-6
+      ? { x: (base.x - tip.x) / len, y: (base.y - tip.y) / len }
+      : { x: 1, y: 0 };
+
+    // Graphic style marks at the body end: inverted bubble / clock wedge.
+    if (pin.style && pin.style.indexOf('inverted') >= 0 && len > 1e-6) {
+      const r = 0.508;
+      const cw = this.worldToScreen(base.x - dir.x * r, base.y - dir.y * r);
+      ctx.beginPath();
+      ctx.arc(cw.x, cw.y, r * this.view.scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (pin.style && pin.style.indexOf('clock') >= 0 && len > 1e-6) {
+      const perp = { x: dir.y, y: -dir.x };
+      const h = 0.635;
+      const p1 = this.worldToScreen(base.x + perp.x * h, base.y + perp.y * h);
+      const p2 = this.worldToScreen(base.x + dir.x * h * 1.6, base.y + dir.y * h * 1.6);
+      const p3 = this.worldToScreen(base.x - perp.x * h, base.y - perp.y * h);
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y);
+      ctx.stroke();
+    }
+
+    if (this.view.scale < 3 || len < 0.1) return;
+
+    // Perpendicular flipped so text sits above horizontal pins / left of
+    // vertical pins, matching KiCad's layout.
+    let perp = { x: dir.y, y: -dir.x };
+    if (perp.y > 0.01 || (Math.abs(perp.y) <= 0.01 && perp.x > 0)) {
+      perp = { x: -perp.x, y: -perp.y };
+    }
+    const vertical = Math.abs(dir.y) > Math.abs(dir.x);
+    const textAngle = vertical ? 90 : 0;
+
+    // Pin number: centred along the pin, offset to the flipped-perp side.
+    if (!lib.hidePinNumbers && pin.number && pin.number !== '~') {
+      const mx = (tip.x + base.x) / 2 + perp.x * 0.75;
+      const my = (tip.y + base.y) / 2 + perp.y * 0.75;
+      this.drawStrokeText(pin.number, mx, my, {
+        size: 1.0, angle: textAngle, color: COLORS.pinNumber,
+        hjustify: 'center', vjustify: 'center',
+      });
+    }
+
+    if (!lib.hidePinNames && pin.name && pin.name !== '~') {
+      const off = lib.pinNameOffset || 0;
+      if (off > 0.01) {
+        // Name inside the body, just past the base, reading along the pin.
+        const nx = base.x + dir.x * (off + 0.4);
+        const ny = base.y + dir.y * (off + 0.4);
+        // Text extends away from the base: choose the justify that grows in
+        // the +dir direction given drawStrokeText's rotation conventions.
+        const hj = vertical ? (dir.y < 0 ? 'left' : 'right') : (dir.x > 0 ? 'left' : 'right');
+        this.drawStrokeText(pin.name, nx, ny, {
+          size: 1.27, angle: textAngle, color: COLORS.pinName,
+          hjustify: hj, vjustify: 'center',
+        });
+      } else {
+        // Offset 0: name above the pin line, number side stays as-is; put the
+        // name on the opposite side of the number.
+        const mx = (tip.x + base.x) / 2 - perp.x * 0.9;
+        const my = (tip.y + base.y) / 2 - perp.y * 0.9;
+        this.drawStrokeText(pin.name, mx, my, {
+          size: 1.27, angle: textAngle, color: COLORS.pinName,
+          hjustify: 'center', vjustify: 'center',
+        });
       }
     }
   };
@@ -538,8 +745,8 @@
       vjustify: opts.vjustify || 'center',
     });
     const ctx = this.ctx;
-    ctx.strokeStyle = opts.color || COLORS.text;
-    ctx.lineWidth = Math.max(1, (opts.width || 0.12) * this.view.scale);
+    ctx.strokeStyle = this.hl || opts.color || COLORS.text;
+    ctx.lineWidth = this.lw(opts.width || 0.12);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (let i = 0; i < polys.length; i++) {
@@ -560,32 +767,106 @@
     });
   };
 
+  // Rotate a local point (+x = away from the anchor along the label) by the
+  // label angle (KiCad CCW on screen) and translate to the anchor.
+  function labelXform(lx, ly, at) {
+    const a = (at.angle || 0) * Math.PI / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    return { x: at.x + lx * cos + ly * sin, y: at.y - lx * sin + ly * cos };
+  }
+
+  // Text placement for a label whose body extends `d` mm from the anchor:
+  // returns {x, y, angle, hjustify} keeping the text upright/readable.
+  function labelTextOpts(at, d) {
+    switch (((at.angle || 0) % 360 + 360) % 360) {
+      case 90:  return { x: at.x, y: at.y - d, angle: 90, hj: 'left' };
+      case 180: return { x: at.x - d, y: at.y, angle: 0, hj: 'right' };
+      case 270: return { x: at.x, y: at.y + d, angle: 90, hj: 'right' };
+      default:  return { x: at.x + d, y: at.y, angle: 0, hj: 'left' };
+    }
+  }
+
+  Renderer.prototype.strokePoly = function (pts, color, close) {
+    const ctx = this.ctx;
+    ctx.strokeStyle = this.hl || color;
+    ctx.lineWidth = this.lw(0.12);
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const s = this.worldToScreen(pts[i].x, pts[i].y);
+      if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+    }
+    if (close) ctx.closePath();
+    ctx.stroke();
+  };
+
   Renderer.prototype.drawLabel = function (node, color, kind) {
     const at = M.readAt(node);
     const text = node.children[1] ? node.children[1].value : '';
     if (!at) return;
-    const j = parseJustify(node);
     const size = fieldSize(node);
-    const hj = j.h || 'left';
-    const vj = j.v || 'center';
-    // For global / hierarchical labels, outline the text so they read distinctly.
-    if (kind !== 'local') {
-      const w = global.StrokeFont.widthMm(text, size);
-      const pad = size * 0.5;
-      const ctx = this.ctx;
-      const cx = at.x, cy = at.y;
-      // Rough box centred on the text, aligned to the anchor by justify.
-      let x0 = cx, x1 = cx + w;
-      if (hj === 'center') { x0 = cx - w / 2; x1 = cx + w / 2; }
-      else if (hj === 'right') { x0 = cx - w; x1 = cx; }
-      const y0 = cy - size * 0.9, y1 = cy + size * 0.9;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = Math.max(1, 0.12 * this.view.scale);
-      const a = this.worldToScreen(x0 - pad, y0), b = this.worldToScreen(x1 + pad, y1);
-      ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+
+    if (kind === 'local') {
+      // Plain text; honour the file's justification.
+      const j = parseJustify(node);
+      this.drawStrokeText(text, at.x, at.y, {
+        size: size, angle: at.angle, color: color,
+        hjustify: j.h || 'left', vjustify: j.v || 'center',
+      });
+      return;
     }
-    this.drawStrokeText(text, at.x, at.y, {
-      size: size, angle: at.angle, color: color, hjustify: hj, vjustify: vj,
+
+    const w = global.StrokeFont.widthMm(text, size);
+    const h2 = size * 0.95;          // half body height
+    const tipLen = h2;               // length of the pointed end
+    const pad = size * 0.4;
+
+    if (kind === 'global') {
+      // KiCad flag outline; the shape decides which ends are pointed.
+      const shapeNode = M.firstChild(node, 'shape');
+      const shape = shapeNode && shapeNode.children[1] ? shapeNode.children[1].value : 'input';
+      const Lb = pad + w + pad;      // body length past the tip
+      let poly;
+      if (shape === 'output') {
+        poly = [
+          { x: 0, y: -h2 }, { x: Lb, y: -h2 }, { x: Lb + tipLen, y: 0 },
+          { x: Lb, y: h2 }, { x: 0, y: h2 },
+        ];
+      } else if (shape === 'bidirectional' || shape === 'tri_state') {
+        poly = [
+          { x: 0, y: 0 }, { x: tipLen, y: -h2 }, { x: tipLen + Lb, y: -h2 },
+          { x: tipLen + Lb + tipLen, y: 0 }, { x: tipLen + Lb, y: h2 },
+          { x: tipLen, y: h2 },
+        ];
+      } else if (shape === 'passive') {
+        poly = [
+          { x: 0, y: -h2 }, { x: Lb, y: -h2 }, { x: Lb, y: h2 }, { x: 0, y: h2 },
+        ];
+      } else { // input (default): point at the anchor
+        poly = [
+          { x: 0, y: 0 }, { x: tipLen, y: -h2 }, { x: tipLen + Lb, y: -h2 },
+          { x: tipLen + Lb, y: h2 }, { x: tipLen, y: h2 },
+        ];
+      }
+      this.strokePoly(poly.map(function (pt) { return labelXform(pt.x, pt.y, at); }), color, true);
+      const tOff = (shape === 'output' || shape === 'passive') ? pad : tipLen + pad;
+      const t = labelTextOpts(at, tOff);
+      this.drawStrokeText(text, t.x, t.y, {
+        size: size, angle: t.angle, color: color, hjustify: t.hj, vjustify: 'center',
+      });
+      return;
+    }
+
+    // Hierarchical label: small pentagon marker at the anchor + text beyond it.
+    const s = size;
+    const penta = [
+      { x: 0, y: 0 }, { x: s / 2, y: -s / 2 }, { x: s, y: -s / 2 },
+      { x: s, y: s / 2 }, { x: s / 2, y: s / 2 },
+    ];
+    this.strokePoly(penta.map(function (pt) { return labelXform(pt.x, pt.y, at); }), color, true);
+    const t = labelTextOpts(at, s + pad);
+    this.drawStrokeText(text, t.x, t.y, {
+      size: size, angle: t.angle, color: color, hjustify: t.hj, vjustify: 'center',
     });
   };
 
@@ -611,8 +892,8 @@
     const ctx = this.ctx;
     const w = M.num(size.children[1]), h = M.num(size.children[2]);
     const s = this.worldToScreen(at.x, at.y);
-    ctx.strokeStyle = COLORS.sheet;
-    ctx.lineWidth = Math.max(1, 0.15 * this.view.scale);
+    ctx.strokeStyle = this.hl || COLORS.sheet;
+    ctx.lineWidth = this.lw(0.15);
     ctx.strokeRect(s.x, s.y, w * this.view.scale, h * this.view.scale);
     const self = this;
     M.childLists(node, 'property').forEach(function (pr, i) {
@@ -621,6 +902,128 @@
         size: 1.27, angle: 0, color: COLORS.sheet, hjustify: 'left', vjustify: 'bottom',
       });
     });
+    // Hierarchical sheet pins: small pentagon on the border + name inside.
+    const cx = at.x + w / 2;
+    M.childLists(node, 'pin').forEach(function (pin) {
+      const name = pin.children[1] ? pin.children[1].value : '';
+      const pat = M.readAt(pin);
+      if (!pat) return;
+      const ps = 1.27;
+      const onLeft = pat.x < cx;
+      const dirX = onLeft ? 1 : -1; // marker/text extend into the sheet
+      const penta = [
+        { x: 0, y: 0 }, { x: dirX * ps / 2, y: -ps / 2 }, { x: dirX * ps, y: -ps / 2 },
+        { x: dirX * ps, y: ps / 2 }, { x: dirX * ps / 2, y: ps / 2 },
+      ].map(function (pt) { return { x: pat.x + pt.x, y: pat.y + pt.y }; });
+      self.strokePoly(penta, COLORS.hierLabel, true);
+      self.drawStrokeText(name, pat.x + dirX * (ps + 0.5), pat.y, {
+        size: 1.27, angle: 0, color: COLORS.hierLabel,
+        hjustify: onLeft ? 'left' : 'right', vjustify: 'center',
+      });
+    });
+  };
+
+  // --- dangling-end indicators ----------------------------------------------
+  //
+  // KiCad marks unconnected wire ends with a small open square and unconnected
+  // pin tips with a small open circle. Connectivity is geometric: two things
+  // connect when their anchor points coincide (or a point sits on a wire).
+
+  Renderer.prototype.drawDangling = function () {
+    const s = this.schem;
+    const self = this;
+    const eps = 0.05;
+    function near(a, b) { return Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps; }
+
+    const wires = s.items('wire').map(function (n) { return M.readPts(n); })
+      .filter(function (p) { return p.length >= 2; });
+    const wireEnds = [];
+    wires.forEach(function (pts, wi) {
+      wireEnds.push({ pt: pts[0], wi: wi }, { pt: pts[pts.length - 1], wi: wi });
+    });
+    const anchors = []; // junctions, no-connects, label anchors, bus-entry ends
+    ['junction', 'no_connect', 'label', 'global_label', 'hierarchical_label'].forEach(function (k) {
+      s.items(k).forEach(function (n) {
+        const at = M.readAt(n);
+        if (at) anchors.push(at);
+      });
+    });
+    s.items('bus_entry').forEach(function (n) {
+      const at = M.readAt(n);
+      if (!at) return;
+      const sz = M.firstChild(n, 'size');
+      const dx = sz ? M.num(sz.children[1]) : 2.54;
+      const dy = sz ? M.num(sz.children[2]) : 2.54;
+      anchors.push({ x: at.x, y: at.y }, { x: at.x + dx, y: at.y + dy });
+    });
+
+    // Hidden pins (power symbols' connection points) still count as
+    // connections, but never get a dangling mark themselves.
+    const pinTipsAll = [];
+    const pinTipsVisible = [];
+    s.symbols().forEach(function (sym) {
+      const lib = s.libFor(sym);
+      if (!lib) return;
+      const p = s.placement(sym);
+      lib.bodies.forEach(function (body) {
+        if (body.unit !== 0 && body.unit !== p.unit) return;
+        body.pins.forEach(function (pin) {
+          const t = symbolTransform(pin.x, pin.y, p);
+          pinTipsAll.push(t);
+          if (!pin.hide) pinTipsVisible.push(t);
+        });
+      });
+    });
+
+    function onOtherWire(pt, exceptWi) {
+      for (let wi = 0; wi < wires.length; wi++) {
+        if (wi === exceptWi) continue;
+        const pts = wires[wi];
+        for (let i = 0; i + 1 < pts.length; i++) {
+          if (distToSeg(pt.x, pt.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y) < eps) return true;
+        }
+      }
+      return false;
+    }
+    function anyNear(list, pt, minCount) {
+      let n = 0;
+      for (let i = 0; i < list.length; i++) {
+        if (near(list[i], pt)) { n++; if (n >= (minCount || 1)) return true; }
+      }
+      return false;
+    }
+
+    let count = 0;
+    const ctx = this.ctx;
+    ctx.lineWidth = Math.max(1, 0.1 * this.view.scale);
+
+    wireEnds.forEach(function (e) {
+      const pt = e.pt;
+      const connected =
+        wireEnds.some(function (o) { return o !== e && near(o.pt, pt); }) ||
+        anyNear(anchors, pt) || anyNear(pinTipsAll, pt) || onOtherWire(pt, e.wi);
+      if (connected) return;
+      count++;
+      const sc = self.worldToScreen(pt.x, pt.y);
+      const r = Math.max(2.5, 0.4 * self.view.scale);
+      ctx.strokeStyle = COLORS.wire;
+      ctx.strokeRect(sc.x - r, sc.y - r, r * 2, r * 2);
+    });
+
+    pinTipsVisible.forEach(function (pt) {
+      const connected =
+        wireEnds.some(function (o) { return near(o.pt, pt); }) ||
+        anyNear(anchors, pt) || anyNear(pinTipsAll, pt, 2) || onOtherWire(pt, -1);
+      if (connected) return;
+      count++;
+      const sc = self.worldToScreen(pt.x, pt.y);
+      ctx.strokeStyle = COLORS.pin;
+      ctx.beginPath();
+      ctx.arc(sc.x, sc.y, Math.max(2.5, 0.4 * self.view.scale), 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    this._danglingCount = count; // exposed for tests
   };
 
   Renderer.prototype.drawSelectionBox = function (b) {
@@ -670,6 +1073,17 @@
       pts.forEach(function (p) { growBox(b, p.x, p.y); });
       b.minX -= 0.3; b.minY -= 0.3; b.maxX += 0.3; b.maxY += 0.3;
       return b;
+    }
+    if (kind === 'bus_entry') {
+      const at = M.readAt(node);
+      if (!at) return null;
+      const sz = M.firstChild(node, 'size');
+      const dx = sz ? M.num(sz.children[1]) : 2.54;
+      const dy = sz ? M.num(sz.children[2]) : 2.54;
+      return {
+        minX: Math.min(at.x, at.x + dx) - 0.3, minY: Math.min(at.y, at.y + dy) - 0.3,
+        maxX: Math.max(at.x, at.x + dx) + 0.3, maxY: Math.max(at.y, at.y + dy) + 0.3,
+      };
     }
     const at = M.readAt(node);
     if (!at) return null;
@@ -742,6 +1156,20 @@
         }
         return false;
       });
+    });
+    if (hit) return hit;
+
+    s.items('bus_entry').some(function (n) {
+      const at = M.readAt(n);
+      if (!at) return false;
+      const sz = M.firstChild(n, 'size');
+      const dx = sz ? M.num(sz.children[1]) : 2.54;
+      const dy = sz ? M.num(sz.children[2]) : 2.54;
+      if (distToSeg(wx, wy, at.x, at.y, at.x + dx, at.y + dy) <= Math.max(tol, 0.4)) {
+        hit = { kind: 'bus_entry', node: n };
+        return true;
+      }
+      return false;
     });
     return hit;
   };
