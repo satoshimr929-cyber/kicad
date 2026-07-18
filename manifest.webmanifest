@@ -1,0 +1,23 @@
+{
+  "name": "KiCad SCH Editor",
+  "short_name": "KiCad SCH",
+  "description": "KiCad 回路図 (.kicad_sch) の閲覧・編集アプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#1e2a36",
+  "background_color": "#ffffff",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "application/x-kicad-schematic": [".kicad_sch"]
+      }
+    }
+  ]
+}

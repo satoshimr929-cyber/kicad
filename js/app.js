@@ -998,6 +998,91 @@
     finishPlacement({ kind: 'symbol', node: node });
   }
 
+  // --- copy / paste / duplicate ---------------------------------------------
+
+  // In-app clipboard: serialized S-expression text per copied item.
+  let clipboard = []; // array of {kind, text}
+  const PASTE_OFFSET = 2.54; // mm
+
+  function copySelection() {
+    if (!state.sel.length) return;
+    clipboard = state.sel.map(function (it) {
+      return { kind: it.kind, text: S.serialize(it.node, 0) };
+    });
+  }
+
+  function cutSelection() {
+    if (!state.sel.length) return;
+    copySelection();
+    deleteSelected();
+  }
+
+  // Replace every (uuid ...) in the tree with a fresh one.
+  function regenUuids(node) {
+    if (node.kind !== 'list') return;
+    if (M.head(node) === 'uuid' && node.children[1]) {
+      node.children[1] = { kind: 'atom', value: uuid(), quoted: node.children[1].quoted };
+      return;
+    }
+    node.children.forEach(regenUuids);
+  }
+
+  // Shift a freshly inserted item by (dx, dy), fields included.
+  function offsetItem(kind, node, dx, dy) {
+    if (kind === 'symbol') {
+      const pl = state.schem.placement(node);
+      moveSymbolTo(node, pl.x + dx, pl.y + dy);
+    } else if (isWireKind(kind)) {
+      M.writePts(node, M.readPts(node).map(function (p) {
+        return { x: p.x + dx, y: p.y + dy };
+      }));
+    } else {
+      const at = M.readAt(node);
+      if (at) M.writeAt(node, at.x + dx, at.y + dy, at.angle);
+    }
+  }
+
+  function pasteClipboard() {
+    if (!state.schem || !clipboard.length) return;
+    const pasted = [];
+    clipboard.forEach(function (entry) {
+      let node;
+      try { node = S.parse(entry.text); } catch (_) { return; }
+      regenUuids(node);
+      addTop(node);
+      offsetItem(entry.kind, node, PASTE_OFFSET, PASTE_OFFSET);
+      // Re-annotate symbol references so the copy gets the next free number.
+      if (entry.kind === 'symbol') {
+        const refProp = state.schem.properties(node).find(function (p) {
+          return p.key === 'Reference';
+        });
+        if (refProp && refProp.value) {
+          const newRef = refProp.value.indexOf('#PWR') === 0
+            ? nextPwrRef()
+            : nextRef(refProp.value.replace(/[^A-Za-z].*$/, '') || 'U');
+          state.schem.setProperty(refProp.node, newRef);
+        }
+      }
+      pasted.push({ kind: entry.kind, node: node });
+    });
+    if (!pasted.length) return;
+    // Next paste of the same clipboard lands one more step away.
+    clipboard = pasted.map(function (it) {
+      return { kind: it.kind, text: S.serialize(it.node, 0) };
+    });
+    renderer.invalidate();
+    commitHistory();
+    setSelection(pasted);
+  }
+
+  function duplicateSelection() {
+    if (!state.sel.length) return;
+    const saved = clipboard;
+    copySelection();
+    pasteClipboard();
+    clipboard = saved.length ? saved : clipboard;
+  }
+
   // --- keyboard shortcuts ---------------------------------------------------
 
   window.addEventListener('keydown', function (e) {
@@ -1015,6 +1100,9 @@
       return;
     }
     if (!state.schem) return;
+    if ((e.ctrlKey || e.metaKey) && (k === 'c' || k === 'C')) { copySelection(); return; }
+    if ((e.ctrlKey || e.metaKey) && (k === 'x' || k === 'X')) { e.preventDefault(); cutSelection(); return; }
+    if ((e.ctrlKey || e.metaKey) && (k === 'v' || k === 'V')) { e.preventDefault(); pasteClipboard(); return; }
     if (k === 'Escape') {
       if (wireDraft.last) cancelDraft();
       else if (state.tool !== 'select') setTool('select');
@@ -1024,7 +1112,8 @@
     if (k === 'w' || k === 'W') { setTool('wire'); return; }
     if (k === 'l' || k === 'L') { setTool('label'); return; }
     if (!state.sel.length) return;
-    if (k === 'r' || k === 'R') rotateSelected();
+    if (k === 'd' || k === 'D') { e.preventDefault(); duplicateSelection(); }
+    else if (k === 'r' || k === 'R') rotateSelected();
     else if (k === 'x' || k === 'X') mirrorSelected('x');
     else if (k === 'y' || k === 'Y') mirrorSelected('y');
     else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); deleteSelected(); }
@@ -1053,7 +1142,7 @@
       c.innerHTML =
         '<p class="hint">アイテムをクリック / タップで選択。Shift+ドラッグで範囲選択。<br>' +
         'ツールバーの「配線」等で新規描画（クリックで頂点、Esc で終了）。<br>' +
-        'R: 回転, X/Y: 反転, Del: 削除, W: 配線, L: ラベル, Ctrl+Z: 元に戻す</p>' +
+        'R: 回転, X/Y: 反転, D: 複製, Ctrl+C/V: コピー/貼り付け, Del: 削除, W: 配線, L: ラベル, Ctrl+Z: 元に戻す</p>' +
         '<div class="section-label">回路図の内容</div>' +
         '<div class="prop-sub">' + summary() + '</div>';
       return;
@@ -1100,6 +1189,7 @@
     titleRow(c, state.sel.length + ' 個のアイテムを選択中');
     actionsRow(c, [
       ['90° 回転', rotateSelected],
+      ['複製', duplicateSelection],
       ['削除', deleteSelected],
     ]);
     actionsRow(c, [
@@ -1228,6 +1318,7 @@
       ['上下反転', function () { mirrorSelected('x'); }],
     ]);
     actionsRow(c, [
+      ['複製', duplicateSelection],
       ['削除', deleteSelected],
       ['選択解除', function () { setSelection([]); }],
     ]);
@@ -1309,6 +1400,18 @@
   window.addEventListener('beforeunload', function (e) {
     if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
   });
+
+  // PWA file handling: open .kicad_sch files launched via OS association.
+  if ('launchQueue' in window && window.launchQueue.setConsumer) {
+    window.launchQueue.setConsumer(function (launchParams) {
+      if (!launchParams.files || !launchParams.files.length) return;
+      launchParams.files[0].getFile().then(function (file) {
+        const reader = new FileReader();
+        reader.onload = function () { loadText(reader.result, file.name); };
+        reader.readAsText(file);
+      });
+    });
+  }
 
   // Initial paint so the canvas sizes correctly.
   renderer.render();

@@ -40,8 +40,8 @@ jobs:
       - name: Assemble static site
         run: |
           mkdir -p _site
-          cp index.html _site/
-          cp -r css js samples _site/
+          cp index.html manifest.webmanifest sw.js _site/
+          cp -r css js samples icons _site/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
