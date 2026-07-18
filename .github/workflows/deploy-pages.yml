@@ -31,12 +31,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The GitHub mirror of kicad-symbols froze in the KiCad 5 (.lib) era;
+      # the live library is on GitLab. Pin a release tag for reproducibility.
       - name: Fetch KiCad symbol libraries
-        uses: actions/checkout@v4
-        with:
-          repository: KiCad/kicad-symbols
-          path: kicad-symbols
-          fetch-depth: 1
+        run: |
+          git clone --depth 1 --branch 10.0.4 \
+            https://gitlab.com/kicad/libraries/kicad-symbols.git kicad-symbols
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

@@ -121,6 +121,17 @@
     });
   }
 
+  // True if a node carries a hide flag — either the legacy bare `hide` atom
+  // (KiCad 6-9) or the KiCad 10 `(hide yes)` sub-list.
+  function hasHideFlag(node) {
+    if (!node || node.kind !== 'list') return false;
+    return node.children.some(function (c) {
+      if (c.kind === 'atom') return c.value === 'hide';
+      return c.kind === 'list' && head(c) === 'hide' &&
+        (!c.children[1] || c.children[1].value === 'yes');
+    });
+  }
+
   // --- lib_symbols parsing --------------------------------------------------
 
   // A sub-symbol name looks like "Device:R_0_1" (unit 0, body-style 1).
@@ -202,7 +213,7 @@
           number: numN ? numN.children[1].value : '',
           etype: args[0] ? args[0].value : 'passive',
           style: style,
-          hide: node.children.some(function (c) { return c.kind === 'atom' && c.value === 'hide'; }),
+          hide: hasHideFlag(node),
         };
       }
       default:
@@ -213,17 +224,13 @@
   function parseLibSymbol(node) {
     const name = node.children[1] ? node.children[1].value : '';
     const pinNamesNode = firstChild(node, 'pin_names');
-    const hidePinNumbers = childLists(node, 'pin_numbers').some(function (p) {
-      return p.children.some(function (c) { return c.kind === 'atom' && c.value === 'hide'; });
-    });
+    const hidePinNumbers = childLists(node, 'pin_numbers').some(hasHideFlag);
     let pinNameOffset = 0.508;
     let hidePinNames = false;
     if (pinNamesNode) {
       const off = firstChild(pinNamesNode, 'offset');
       if (off) pinNameOffset = num(off.children[1]);
-      hidePinNames = pinNamesNode.children.some(function (c) {
-        return c.kind === 'atom' && c.value === 'hide';
-      });
+      hidePinNames = hasHideFlag(pinNamesNode);
     }
 
     const bodies = [];
@@ -312,12 +319,7 @@
         key: p.children[1] ? p.children[1].value : '',
         value: p.children[2] ? p.children[2].value : '',
         at: readAt(p),
-        hidden: (function () {
-          const eff = firstChild(p, 'effects');
-          return eff ? eff.children.some(function (c) {
-            return c.kind === 'atom' && c.value === 'hide';
-          }) : false;
-        })(),
+        hidden: hasHideFlag(firstChild(p, 'effects')),
       };
     });
   };

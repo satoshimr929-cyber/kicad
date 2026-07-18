@@ -47,23 +47,37 @@ try {
     { cwd: srcDir, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
 } catch (_) { /* not a git checkout (e.g. mock library in tests) */ }
 
-// Search recursively — the upstream repo layout has moved files between the
-// root and subdirectories across releases.
-function findSymbolFiles(dir) {
-  const out = [];
+// The upstream layout has changed across releases:
+//   - classic: one <Lib>.kicad_sym multi-symbol file (root or nested)
+//   - KiCad 10+: a <Lib>.kicad_symdir/ directory with one single-symbol
+//     .kicad_sym file per symbol
+// Collect both forms as {lib, files: [paths...]} sources.
+function collectLibs(dir) {
+  const libs = []; // {lib, files}
   (function walk(d) {
     fs.readdirSync(d, { withFileTypes: true }).forEach(function (ent) {
       if (ent.name === '.git') return;
       const p = path.join(d, ent.name);
-      if (ent.isDirectory()) walk(p);
-      else if (ent.name.endsWith('.kicad_sym')) out.push(p);
+      if (ent.isDirectory()) {
+        if (ent.name.endsWith('.kicad_symdir')) {
+          const inner = fs.readdirSync(p)
+            .filter(function (f) { return f.endsWith('.kicad_sym'); })
+            .sort()
+            .map(function (f) { return path.join(p, f); });
+          if (inner.length) libs.push({ lib: ent.name.replace(/\.kicad_symdir$/, ''), files: inner });
+        } else {
+          walk(p);
+        }
+      } else if (ent.name.endsWith('.kicad_sym')) {
+        libs.push({ lib: ent.name.replace(/\.kicad_sym$/, ''), files: [p] });
+      }
     });
   })(dir);
-  return out.sort();
+  return libs.sort(function (a, b) { return a.lib.localeCompare(b.lib); });
 }
 
-const files = findSymbolFiles(srcDir);
-if (files.length === 0) {
+const libSources = collectLibs(srcDir);
+if (libSources.length === 0) {
   console.error('No .kicad_sym files found under ' + srcDir + ' — top-level contents:');
   fs.readdirSync(srcDir).slice(0, 40).forEach(function (e) { console.error('  ' + e); });
   process.exit(1);
@@ -71,35 +85,51 @@ if (files.length === 0) {
 
 const symbols = [];
 const seenLibs = {};
+let libCount = 0;
 let failed = 0;
 
-files.forEach(function (fullPath) {
-  const file = path.basename(fullPath);
-  const lib = file.replace(/\.kicad_sym$/, '');
-  if (seenLibs[lib]) {
-    console.error('DUPLICATE lib name skipped: ' + fullPath);
+libSources.forEach(function (src) {
+  if (seenLibs[src.lib]) {
+    console.error('DUPLICATE lib name skipped: ' + src.lib);
     return;
   }
-  seenLibs[lib] = true;
-  const text = fs.readFileSync(fullPath, 'utf8');
-  let root;
-  try {
-    root = S.parse(text);
-  } catch (err) {
-    console.error('PARSE FAIL ' + file + ': ' + err.message);
-    failed++;
-    return;
-  }
-  fs.copyFileSync(fullPath, path.join(outDir, file));
+  seenLibs[src.lib] = true;
 
-  // Index derived (extends) symbols too; their own properties carry ref/desc,
-  // falling back to the parent's when the derived symbol doesn't override.
-  const all = childLists(root, 'symbol');
+  // Parse every source file of the library and gather its (symbol ...) nodes
+  // into one merged document, so the app always sees one file per library.
+  const symbolNodes = [];
+  let ok = true;
+  src.files.forEach(function (fp) {
+    let root;
+    try {
+      root = S.parse(fs.readFileSync(fp, 'utf8'));
+    } catch (err) {
+      console.error('PARSE FAIL ' + fp + ': ' + err.message);
+      ok = false;
+      return;
+    }
+    childLists(root, 'symbol').forEach(function (sn) { symbolNodes.push(sn); });
+  });
+  if (!ok && symbolNodes.length === 0) { failed++; return; }
+
+  const merged = {
+    kind: 'list',
+    children: [
+      { kind: 'atom', value: 'kicad_symbol_lib', quoted: false },
+      S.parse('(version 20251024)'),
+      S.parse('(generator "kicad-sch-web-bundler")'),
+    ].concat(symbolNodes),
+  };
+  fs.writeFileSync(path.join(outDir, src.lib + '.kicad_sym'), S.serializeDocument(merged));
+  libCount++;
+
+  // Index every symbol; extends-derived ones fall back to the parent's
+  // Reference/Description when they don't override them.
   const byName = {};
-  all.forEach(function (sn) {
+  symbolNodes.forEach(function (sn) {
     if (sn.children[1]) byName[sn.children[1].value] = sn;
   });
-  all.forEach(function (sn) {
+  symbolNodes.forEach(function (sn) {
     const name = sn.children[1] ? sn.children[1].value : '';
     if (!name) return;
     let refNode = sn, guard = 0;
@@ -113,14 +143,14 @@ files.forEach(function (fullPath) {
       if (!desc) desc = propValue(parent, 'Description');
       refNode = parent;
     }
-    symbols.push([lib, name, ref || 'U', (desc || '').slice(0, 60)]);
+    symbols.push([src.lib, name, ref || 'U', (desc || '').slice(0, 60)]);
   });
 });
 
 const index = {
   version: version,
   generated: new Date().toISOString(),
-  libs: Object.keys(seenLibs).length - failed,
+  libs: libCount,
   count: symbols.length,
   symbols: symbols,
 };
