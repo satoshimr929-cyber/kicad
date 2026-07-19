@@ -81,3 +81,25 @@ jobs:
           echo "--- headers: library/Device.kicad_sym ---"
           curl -sI "$base/library/Device.kicad_sym" | sed -n '1,15p'
           [ "$code" = "200" ]
+
+      # A user in Japan sees 404 while the runner (US) gets 200. Ask
+      # globalping.io for a Tokyo-vantage view of the same URL to tell a bad
+      # Fastly POP apart from a problem on the user's own network.
+      - name: Probe from Japan vantage
+        continue-on-error: true
+        run: |
+          m=$(curl -s -X POST https://api.globalping.io/v1/measurements \
+            -H 'Content-Type: application/json' \
+            -d '{"type":"http","target":"satoshimr929-cyber.github.io","limit":3,"locations":[{"country":"JP"}],"measurementOptions":{"protocol":"HTTPS","request":{"path":"/kicad/library/index.json","method":"HEAD"}}}')
+          echo "create: $m"
+          id=$(echo "$m" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          sleep 25
+          curl -s "https://api.globalping.io/v1/measurements/$id" \
+            | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+for r in d.get("results",[]):
+    p=r.get("probe",{}); res=r.get("result",{})
+    print(p.get("city"), p.get("network"), "->", res.get("statusCode"), res.get("status"))
+    h=res.get("headers",{})
+    for k in ("etag","last-modified","x-github-request-id","x-served-by","x-cache","age"):
+        if k in h: print("   ", k+":", h[k])'
