@@ -95,11 +95,4 @@ jobs:
           id=$(echo "$m" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
           sleep 25
           curl -s "https://api.globalping.io/v1/measurements/$id" \
-            | python3 -c 'import sys,json
-d=json.load(sys.stdin)
-for r in d.get("results",[]):
-    p=r.get("probe",{}); res=r.get("result",{})
-    print(p.get("city"), p.get("network"), "->", res.get("statusCode"), res.get("status"))
-    h=res.get("headers",{})
-    for k in ("etag","last-modified","x-github-request-id","x-served-by","x-cache","age"):
-        if k in h: print("   ", k+":", h[k])'
+            | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(r["probe"].get("city"), r["probe"].get("network"), "->", r["result"].get("statusCode"), {k: v for k, v in (r["result"].get("headers") or {}).items() if k.lower() in ("etag", "age", "x-served-by", "x-cache", "x-github-request-id", "last-modified")}) for r in d.get("results", [])]'
