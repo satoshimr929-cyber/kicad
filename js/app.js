@@ -193,7 +193,8 @@
     }).catch(function (err) {
       stdlibBtn.disabled = false;
       stdlibBtn.textContent = '標準ライブラリを読み込む';
-      alert('標準ライブラリを読み込めませんでした。\n' + err.message);
+      alert('標準ライブラリを読み込めませんでした（' + err.message + '）。\n' +
+        '数分待ってからページを再読み込みしてお試しください。');
     });
   });
 

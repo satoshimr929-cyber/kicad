@@ -13,30 +13,57 @@
   let indexPromise = null;
   const libCache = {}; // lib name -> Promise<parsed root>
 
+  // Fetch a library file dodging stale caches. Right after a deploy the Pages
+  // CDN can negative-cache a 404 (and browsers cache it in turn), so first
+  // revalidate with the origin, and on any failure retry once with a
+  // cache-busting query — a fresh cache key at every layer. The service
+  // worker's offline fallback matches with ignoreSearch, so the query does
+  // not break offline use.
+  function fetchFresh(path, label) {
+    function check(res) {
+      if (!res.ok) throw new Error(label + ': HTTP ' + res.status);
+      return res;
+    }
+    return fetch(path, { cache: 'no-cache' }).then(check).catch(function () {
+      return fetch(path + '?r=' + Date.now(), { cache: 'reload' }).then(check);
+    });
+  }
+
   function loadIndex() {
     if (!indexPromise) {
-      indexPromise = fetch(BASE + 'index.json').then(function (res) {
-        if (!res.ok) throw new Error('index.json: HTTP ' + res.status);
-        return res.json();
-      }).catch(function (err) {
-        indexPromise = null; // allow retry
-        throw err;
-      });
+      indexPromise = fetchFresh(BASE + 'index.json', 'index.json')
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.symbols && data.symbols.length) return data;
+          // An empty index was briefly deployed once; a copy may linger in
+          // caches. Force a fresh copy before giving up.
+          return fetch(BASE + 'index.json?r=' + Date.now(), { cache: 'reload' })
+            .then(function (res) {
+              if (!res.ok) throw new Error('index.json: HTTP ' + res.status);
+              return res.json();
+            }).then(function (fresh) {
+              if (fresh && fresh.symbols && fresh.symbols.length) return fresh;
+              throw new Error('索引が空です（ライブラリ未配備）');
+            });
+        })
+        .catch(function (err) {
+          indexPromise = null; // allow retry
+          throw err;
+        });
     }
     return indexPromise;
   }
 
   function loadLib(lib) {
     if (!libCache[lib]) {
-      libCache[lib] = fetch(BASE + lib + '.kicad_sym').then(function (res) {
-        if (!res.ok) throw new Error(lib + '.kicad_sym: HTTP ' + res.status);
-        return res.text();
-      }).then(function (text) {
-        return global.SExpr.parse(text);
-      }).catch(function (err) {
-        delete libCache[lib];
-        throw err;
-      });
+      libCache[lib] = fetchFresh(BASE + lib + '.kicad_sym', lib + '.kicad_sym')
+        .then(function (res) { return res.text(); })
+        .then(function (text) {
+          return global.SExpr.parse(text);
+        }).catch(function (err) {
+          delete libCache[lib];
+          throw err;
+        });
     }
     return libCache[lib];
   }
