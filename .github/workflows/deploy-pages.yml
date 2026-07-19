@@ -60,3 +60,24 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # The library 404'd on user devices twice despite successful deploys, so
+      # verify from here (unrestricted network) what the live site actually
+      # serves, and fail loudly if the library never appears.
+      - name: Verify deployed site
+        run: |
+          base="https://satoshimr929-cyber.github.io/kicad"
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$base/library/index.json?ci=$i-$RANDOM")
+            echo "attempt $i ($(date -u +%T)): library/index.json -> $code"
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          echo "--- headers: / ---"
+          curl -sI "$base/" | sed -n '1,15p'
+          echo "--- headers: library/index.json ---"
+          curl -sI "$base/library/index.json" | sed -n '1,15p'
+          echo "--- headers: library/Device.kicad_sym ---"
+          curl -sI "$base/library/Device.kicad_sym" | sed -n '1,15p'
+          [ "$code" = "200" ]
