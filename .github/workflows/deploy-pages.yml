@@ -49,6 +49,10 @@ jobs:
           mkdir -p _site
           cp index.html manifest.webmanifest sw.js _site/
           cp -r css js samples icons _site/
+          # Stamp the commit into the page so the app fetches the library
+          # under per-deploy URLs (cache-proof; see js/stdlib.js).
+          sed -i "s/name=\"build\" content=\"dev\"/name=\"build\" content=\"${GITHUB_SHA:0:8}\"/" _site/index.html
+          grep -o 'name="build" content="[^"]*"' _site/index.html
           node tools/build-lib-index.js kicad-symbols _site/library
           du -sh _site
 
@@ -80,6 +84,9 @@ jobs:
           curl -sI "$base/library/index.json" | sed -n '1,15p'
           echo "--- headers: library/Device.kicad_sym ---"
           curl -sI "$base/library/Device.kicad_sym" | sed -n '1,15p'
+          echo "--- app URL (per-deploy version query) ---"
+          curl -s -o /dev/null -w "GET index.json?v=${GITHUB_SHA:0:8} -> %{http_code}\n" \
+            "$base/library/index.json?v=${GITHUB_SHA:0:8}"
           [ "$code" = "200" ]
 
       # A user in Japan sees 404 while the runner (US) gets 200. Ask

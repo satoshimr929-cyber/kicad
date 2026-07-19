@@ -13,6 +13,19 @@
   let indexPromise = null;
   const libCache = {}; // lib name -> Promise<parsed root>
 
+  // The deploy step stamps the commit SHA into <meta name="build">, so every
+  // deployment fetches the library under fresh URLs that no cache layer can
+  // have gone stale on. Locally (content="dev") no version query is added.
+  let buildTag = null;
+  function tag() {
+    if (buildTag === null) {
+      const m = typeof document !== 'undefined'
+        ? document.querySelector('meta[name="build"]') : null;
+      buildTag = m && m.content && m.content !== 'dev' ? m.content : '';
+    }
+    return buildTag;
+  }
+
   // Fetch a library file dodging stale caches. Right after a deploy the Pages
   // CDN can negative-cache a 404 (and browsers cache it in turn), so first
   // revalidate with the origin, and on any failure retry once with a
@@ -24,7 +37,8 @@
       if (!res.ok) throw new Error(label + ': HTTP ' + res.status);
       return res;
     }
-    return fetch(path, { cache: 'no-cache' }).then(check).catch(function () {
+    const first = tag() ? path + '?v=' + encodeURIComponent(tag()) : path;
+    return fetch(first, { cache: 'no-cache' }).then(check).catch(function () {
       return fetch(path + '?r=' + Date.now(), { cache: 'reload' }).then(check);
     });
   }
