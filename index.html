@@ -115,13 +115,23 @@
         <input id="partSearch" type="text" placeholder="部品名で絞り込み…" autocomplete="off">
       </div>
       <div id="partList" class="part-list"></div>
+      <div id="partPreview" class="part-preview" hidden>
+        <canvas id="previewCanvas"></canvas>
+        <div id="previewTitle" class="preview-title"></div>
+        <div id="previewDesc" class="preview-desc"></div>
+        <div id="previewMeta" class="preview-meta"></div>
+        <div class="preview-actions">
+          <button id="previewBack" class="btn">← 一覧に戻る</button>
+          <button id="previewPlace" class="btn primary">この部品を配置</button>
+        </div>
+      </div>
       <div class="modal-foot">
         <button id="stdlibBtn" class="btn">標準ライブラリを読み込む</button>
         <label class="btn" for="symImport">.kicad_sym を取り込む…</label>
         <input id="symImport" type="file" accept=".kicad_sym" hidden>
       </div>
       <p class="prop-sub stdlib-note" id="stdlibNote">
-        標準ライブラリ: KiCad Symbol Libraries (CC-BY-SA 4.0)
+        標準ライブラリ: KiCad Symbol / Footprint Libraries (CC-BY-SA 4.0)
       </p>
     </div>
   </div>

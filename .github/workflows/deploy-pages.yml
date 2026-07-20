@@ -37,6 +37,8 @@ jobs:
         run: |
           git clone --depth 1 --branch 10.0.4 \
             https://gitlab.com/kicad/libraries/kicad-symbols.git kicad-symbols
+          git clone --depth 1 --branch 10.0.4 \
+            https://gitlab.com/kicad/libraries/kicad-footprints.git kicad-footprints
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -54,6 +56,7 @@ jobs:
           sed -i "s/name=\"build\" content=\"dev\"/name=\"build\" content=\"${GITHUB_SHA:0:8}\"/" _site/index.html
           grep -o 'name="build" content="[^"]*"' _site/index.html
           node tools/build-lib-index.js kicad-symbols _site/library
+          node tools/build-fp-index.js kicad-footprints _site/library/fp-index.json
           du -sh _site
 
       - name: Upload artifact
@@ -87,7 +90,10 @@ jobs:
           echo "--- app URL (per-deploy version query) ---"
           curl -s -o /dev/null -w "GET index.json?v=${GITHUB_SHA:0:8} -> %{http_code}\n" \
             "$base/library/index.json?v=${GITHUB_SHA:0:8}"
-          [ "$code" = "200" ]
+          fpcode=$(curl -s -o /dev/null -w '%{http_code}' \
+            "$base/library/fp-index.json?v=${GITHUB_SHA:0:8}")
+          echo "GET fp-index.json?v=${GITHUB_SHA:0:8} -> $fpcode"
+          [ "$code" = "200" ] && [ "$fpcode" = "200" ]
 
       # A user in Japan sees 404 while the runner (US) gets 200. Ask
       # globalping.io for a Tokyo-vantage view of the same URL to tell a bad

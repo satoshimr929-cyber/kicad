@@ -78,6 +78,7 @@ select.btn { padding: 6px 8px; }
   background: rgba(0,0,0,.35);
 }
 .modal[hidden] { display: none; }
+.part-list[hidden], .part-search-wrap[hidden] { display: none; }
 .modal-box {
   background: var(--panel); border-radius: 12px; width: min(520px, 92vw);
   max-height: 80vh; display: flex; flex-direction: column;
@@ -117,6 +118,17 @@ select.btn { padding: 6px 8px; }
 .part-item.std { text-align: left; }
 .part-item.std .std-lib { display: block; font-size: 11px; color: var(--muted); }
 .stdlib-note { padding: 0 14px 10px; margin: 0; font-size: 11px; }
+
+.part-preview { padding: 10px 14px; overflow-y: auto; }
+.part-preview canvas {
+  width: 100%; height: 220px; display: block;
+  border: 1px solid var(--border); border-radius: 8px; background: #fff;
+}
+.preview-title { font-weight: 600; font-size: 14px; margin-top: 10px; word-break: break-all; }
+.preview-desc { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.preview-meta { font-size: 12px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+.preview-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 .field-modal-hint { padding: 0 14px; margin: 10px 0; line-height: 1.6; }
 .field-list {

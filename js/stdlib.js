@@ -171,8 +171,35 @@
     });
   }
 
+  // Search index of the bundled KiCad footprint libraries (names only; the
+  // geometry is not shipped). Same freshness handling as the symbol index.
+  let fpIndexPromise = null;
+  function loadFpIndex() {
+    if (!fpIndexPromise) {
+      fpIndexPromise = fetchFresh(BASE + 'fp-index.json', 'fp-index.json')
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.footprints && data.footprints.length) return data;
+          return fetch(BASE + 'fp-index.json?r=' + Date.now(), { cache: 'reload' })
+            .then(function (res) {
+              if (!res.ok) throw new Error('fp-index.json: HTTP ' + res.status);
+              return res.json();
+            }).then(function (fresh) {
+              if (fresh && fresh.footprints && fresh.footprints.length) return fresh;
+              throw new Error('フットプリント索引が空です');
+            });
+        })
+        .catch(function (err) {
+          fpIndexPromise = null; // allow retry
+          throw err;
+        });
+    }
+    return fpIndexPromise;
+  }
+
   global.KiStdLib = {
     loadIndex: loadIndex,
     loadSymbol: loadSymbol,
+    loadFpIndex: loadFpIndex,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

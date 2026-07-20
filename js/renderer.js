@@ -262,7 +262,7 @@
 
     if (!this.schem) return;
     if (this.showGrid) this.drawGrid(rect);
-    this.drawPageFrame();
+    if (this.showFrame !== false) this.drawPageFrame();
 
     const self = this;
     // Wires / buses.

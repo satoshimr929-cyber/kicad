@@ -110,7 +110,7 @@
       div.textContent = meta.label || libId;
       div.title = libId;
       div.dataset.search = (meta.label || '') + ' ' + libId;
-      div.addEventListener('click', function () { choosePart(libId); });
+      div.addEventListener('click', function () { showPreview(libId, meta, meta.label || ''); });
       partList.appendChild(div);
     }
     window.KiParts.ORDER.forEach(function (id) { addItem(id, window.KiParts.PARTS[id]); });
@@ -155,7 +155,7 @@
           lb.textContent = s[0] + (s[3] ? ' — ' + s[3] : '');
           el.appendChild(nm);
           el.appendChild(lb);
-          el.addEventListener('click', function () { choosePartStd(s[0], s[1]); });
+          el.addEventListener('click', function () { previewPartStd(s[0], s[1], s[3]); });
           partList.appendChild(el);
         });
         visible += matches.length;
@@ -198,18 +198,64 @@
     });
   });
 
-  function choosePartStd(lib, name) {
+  function previewPartStd(lib, name, desc) {
     window.KiStdLib.loadSymbol(lib, name).then(function (meta) {
       importedParts[lib + ':' + name] = meta;
-      choosePart(lib + ':' + name);
+      showPreview(lib + ':' + name, meta, desc || '');
     }).catch(function (err) {
       alert('シンボルを読み込めませんでした。\n' + err.message);
     });
   }
 
+  // --- symbol preview (shown before committing to placement) ----------------
+
+  const partPreview = document.getElementById('partPreview');
+  const previewTitle = document.getElementById('previewTitle');
+  const previewDesc = document.getElementById('previewDesc');
+  const previewMeta = document.getElementById('previewMeta');
+  const searchWrap = document.querySelector('.part-search-wrap');
+  const previewRenderer = new window.KiRenderer(document.getElementById('previewCanvas'));
+  previewRenderer.showGrid = false;
+  previewRenderer.showFrame = false;
+  let previewLibId = null;
+
+  // Render the bare definition through the normal pipeline: a one-symbol
+  // schematic whose only instance has no fields, so just the body and pins
+  // show, fitted to the preview canvas.
+  function showPreview(libId, meta, desc) {
+    previewLibId = libId;
+    previewTitle.textContent = libId;
+    previewDesc.textContent = desc || '';
+    const fpMatch = /\(property\s+"Footprint"\s+"([^"]+)"/.exec(meta.def);
+    previewMeta.textContent = 'リファレンス: ' + (meta.ref || 'U') +
+      (fpMatch ? ' ・ フットプリント: ' + fpMatch[1] : '');
+    partList.hidden = true;
+    searchWrap.hidden = true;
+    partPreview.hidden = false;
+    const doc = '(kicad_sch (version 20231120) (generator "preview")\n' +
+      '  (lib_symbols\n' + meta.def + '\n  )\n' +
+      '  (symbol (lib_id "' + S.escapeString(libId) + '") (at 100 100 0) (unit 1))\n)';
+    previewRenderer.setSchematic(new M.Schematic(S.parse(doc)));
+    previewRenderer.fit();
+    previewRenderer.render();
+  }
+
+  function hidePreview() {
+    partPreview.hidden = true;
+    partList.hidden = false;
+    searchWrap.hidden = false;
+    previewLibId = null;
+  }
+
+  document.getElementById('previewBack').addEventListener('click', hidePreview);
+  document.getElementById('previewPlace').addEventListener('click', function () {
+    if (previewLibId) choosePart(previewLibId);
+  });
+
   function openPartModal() {
     if (!state.schem) { alert('先にファイルを開くかサンプルを読み込んでください。'); return; }
     partSearch.value = '';
+    hidePreview();
     buildPartList();
     partModal.hidden = false;
     partSearch.focus();
@@ -1311,14 +1357,48 @@
     K: ['Relay_THT:Relay_SPDT_Finder_36.11'],
   };
 
-  function fillFootprintDatalist(refValue) {
+  let fpIndex = null; // full footprint-library index, loaded lazily on focus
+
+  function fillFootprintDatalist(refValue, query) {
     const dl = document.getElementById('fpList');
     dl.innerHTML = '';
-    const prefix = (refValue || '').replace(/[^A-Za-z].*$/, '');
-    (FOOTPRINT_SUGGESTIONS[prefix] || []).forEach(function (fp) {
+    const q = (query || '').trim().toLowerCase();
+    const seen = {};
+    function add(fp) {
+      if (seen[fp]) return;
+      seen[fp] = true;
       const opt = document.createElement('option');
       opt.value = fp;
       dl.appendChild(opt);
+    }
+    const prefix = (refValue || '').replace(/[^A-Za-z].*$/, '');
+    (FOOTPRINT_SUGGESTIONS[prefix] || []).forEach(function (fp) {
+      if (!q || fp.toLowerCase().indexOf(q) >= 0) add(fp);
+    });
+    // With the full index loaded, a 2+ character query searches all of it.
+    if (fpIndex && q.length >= 2) {
+      for (let i = 0; i < fpIndex.footprints.length && dl.children.length < 50; i++) {
+        const f = fpIndex.footprints[i]; // [lib, name, descr]
+        if ((f[0] + ':' + f[1] + ' ' + f[2]).toLowerCase().indexOf(q) >= 0) {
+          add(f[0] + ':' + f[1]);
+        }
+      }
+    }
+  }
+
+  // Footprint inputs complete from the full KiCad footprint library: fetch
+  // the bundled index on first focus, then refresh the datalist per keystroke.
+  function wireFootprintInput(input, getRef) {
+    input.setAttribute('list', 'fpList');
+    input.addEventListener('focus', function () {
+      if (fpIndex) return;
+      window.KiStdLib.loadFpIndex().then(function (ix) {
+        fpIndex = ix;
+        fillFootprintDatalist(getRef(), input.value);
+      }).catch(function () { /* offline or undeployed: static suggestions only */ });
+    });
+    input.addEventListener('input', function () {
+      fillFootprintDatalist(getRef(), input.value);
     });
   }
 
@@ -1330,7 +1410,8 @@
     const refProp = props.find(function (p) { return p.key === 'Reference'; });
 
     const title = titleRow(c, refProp ? refProp.value : 'シンボル', libId);
-    fillFootprintDatalist(refProp ? refProp.value : '');
+    function currentRef() { return title.textContent || ''; }
+    fillFootprintDatalist(currentRef());
 
     let sawFootprint = false;
     props.forEach(function (p) {
@@ -1344,7 +1425,7 @@
         commitHistory();
         if (p.key === 'Reference') { title.textContent = val; fillFootprintDatalist(val); }
       });
-      if (isFootprint) row.querySelector('input').setAttribute('list', 'fpList');
+      if (isFootprint) wireFootprintInput(row.querySelector('input'), currentRef);
       c.appendChild(row);
     });
 
@@ -1357,7 +1438,7 @@
         renderer.render();
         commitHistory();
       });
-      row.querySelector('input').setAttribute('list', 'fpList');
+      wireFootprintInput(row.querySelector('input'), currentRef);
       c.appendChild(row);
     }
 
