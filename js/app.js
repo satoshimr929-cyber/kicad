@@ -1400,6 +1400,14 @@
     input.addEventListener('input', function () {
       fillFootprintDatalist(getRef(), input.value);
     });
+    // Open the footprint editor on the current value (pads, silk, drills…).
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn fp-edit-btn';
+    editBtn.textContent = 'フットプリントを編集…';
+    editBtn.addEventListener('click', function () {
+      window.KiFpEditor.openFromValue(input.value);
+    });
+    input.parentElement.appendChild(editBtn);
   }
 
   function renderSymbolProps(c, sym) {

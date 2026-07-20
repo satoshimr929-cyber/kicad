@@ -197,9 +197,38 @@
     return fpIndexPromise;
   }
 
+  // Footprint geometry: each <Lib>.pretty ships merged as fp/<Lib>.kicad_fps
+  // (see tools/build-fp-index.js); loaded lazily for the footprint editor.
+  const fpLibCache = {}; // lib name -> Promise<parsed root>
+  function loadFpLib(lib) {
+    if (!fpLibCache[lib]) {
+      fpLibCache[lib] = fetchFresh(BASE + 'fp/' + lib + '.kicad_fps', lib + '.kicad_fps')
+        .then(function (res) { return res.text(); })
+        .then(function (text) {
+          return global.SExpr.parse(text);
+        }).catch(function (err) {
+          delete fpLibCache[lib];
+          throw err;
+        });
+    }
+    return fpLibCache[lib];
+  }
+
+  // Resolve one footprint into a fresh clone the editor may mutate freely.
+  function loadFootprint(lib, name) {
+    return loadFpLib(lib).then(function (root) {
+      const fp = M().childLists(root, 'footprint').find(function (f) {
+        return f.children[1] && f.children[1].value === name;
+      });
+      if (!fp) throw new Error(lib + ':' + name + ' が見つかりません');
+      return clone(fp);
+    });
+  }
+
   global.KiStdLib = {
     loadIndex: loadIndex,
     loadSymbol: loadSymbol,
     loadFpIndex: loadFpIndex,
+    loadFootprint: loadFootprint,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -130,6 +130,30 @@ select.btn { padding: 6px 8px; }
 .preview-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+.fp-editor-box { width: min(960px, 96vw); height: 94vh; max-height: 94vh; }
+.fp-head-actions { display: flex; gap: 8px; align-items: center; font-weight: 400; }
+.fp-toolbar {
+  display: flex; gap: 6px; align-items: center;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+}
+.fp-toolbar input {
+  flex: 1; min-width: 80px; padding: 6px 8px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text);
+}
+#fpCanvas { flex: 1; min-height: 0; width: 100%; touch-action: none; display: block; }
+.fp-panel {
+  padding: 10px 14px; border-top: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+  font-size: 12px; color: var(--muted); max-height: 30vh; overflow-y: auto;
+}
+.fp-panel-title { flex-basis: 100%; font-weight: 600; color: var(--text); font-size: 13px; }
+.fp-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+.fp-field input {
+  width: 90px; padding: 5px 7px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text);
+}
+.fp-edit-btn { white-space: nowrap; margin-top: 6px; font-size: 12px; }
+
 .field-modal-hint { padding: 0 14px; margin: 10px 0; line-height: 1.6; }
 .field-list {
   padding: 4px 14px 14px; overflow-y: auto;

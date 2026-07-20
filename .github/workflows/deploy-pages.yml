@@ -56,7 +56,7 @@ jobs:
           sed -i "s/name=\"build\" content=\"dev\"/name=\"build\" content=\"${GITHUB_SHA:0:8}\"/" _site/index.html
           grep -o 'name="build" content="[^"]*"' _site/index.html
           node tools/build-lib-index.js kicad-symbols _site/library
-          node tools/build-fp-index.js kicad-footprints _site/library/fp-index.json
+          node tools/build-fp-index.js kicad-footprints _site/library
           du -sh _site
 
       - name: Upload artifact
@@ -93,7 +93,10 @@ jobs:
           fpcode=$(curl -s -o /dev/null -w '%{http_code}' \
             "$base/library/fp-index.json?v=${GITHUB_SHA:0:8}")
           echo "GET fp-index.json?v=${GITHUB_SHA:0:8} -> $fpcode"
-          [ "$code" = "200" ] && [ "$fpcode" = "200" ]
+          fplib=$(curl -s -o /dev/null -w '%{http_code}' \
+            "$base/library/fp/Resistor_SMD.kicad_fps?v=${GITHUB_SHA:0:8}")
+          echo "GET fp/Resistor_SMD.kicad_fps?v=${GITHUB_SHA:0:8} -> $fplib"
+          [ "$code" = "200" ] && [ "$fpcode" = "200" ] && [ "$fplib" = "200" ]
 
       # A user in Japan sees 404 while the runner (US) gets 200. Ask
       # globalping.io for a Tokyo-vantage view of the same URL to tell a bad

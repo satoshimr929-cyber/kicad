@@ -19,6 +19,8 @@ const APP_SHELL = [
   'js/hershey.js',
   'js/strokefont.js',
   'js/renderer.js',
+  'js/fprenderer.js',
+  'js/fpeditor.js',
   'js/sample.js',
   'js/app.js',
   'manifest.webmanifest',
