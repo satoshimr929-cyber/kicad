@@ -74,6 +74,13 @@
     フットプリント名の索引は [KiCad Footprint Libraries](https://gitlab.com/kicad/libraries/kicad-footprints)
     （CC-BY-SA 4.0）から同様にデプロイ時に生成
   - 手持ちの **`.kicad_sym` ファイルを取り込み**、その中のシンボルも配置可能
+  - **自作ライブラリ**: 公式ライブラリに無い部品をこのリポジトリで自作して同梱している。
+    シンボルは `js/parts.js`（内蔵部品として配置可）＋ `custom/*.kicad_sym`（PC の KiCad へ
+    取り込む用）、フットプリントは `footprints/*.pretty/` に置くとデプロイ時に公式ライブラリへ
+    重ねて索引化され、`Custom:` 名で補完・編集できる
+    - **`Custom:RP2040-Zero`** / **`MCU_Module:RP2040-Zero`**（Waveshare RP2040-Zero、
+      公式機構図どおり 18.0×23.5mm・列間隔 15.24mm(0.6")・2.54mm ピッチ・23 スルーホール
+      パッド。シンボルのピン番号とフットプリントのパッド番号は 1–23 で一致）
 - **表示項目の切り替え**（ツールバー「表示項目…」）
   - Reference / Value / Footprint / Datasheet / Description など、シンボルの
     プロパティ種別ごとに回路図上への表示・非表示を選択可能。実機の KiCad ファイルでは

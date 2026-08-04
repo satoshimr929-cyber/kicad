@@ -333,6 +333,43 @@
   function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
   // libId -> { def, value (default), ref (prefix), label (menu text) }
+  const RP2040_ZERO_DEF =
+    '(symbol "MCU_Module:RP2040-Zero" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)\n' +
+    '  (property "Reference" "U" (at -10.16 20.32 0) (effects (font (size 1.27 1.27)) (justify left)))\n' +
+    '  (property "Value" "RP2040-Zero" (at -10.16 -20.32 0) (effects (font (size 1.27 1.27)) (justify left)))\n' +
+    '  (property "Footprint" "Custom:RP2040-Zero" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))\n' +
+    '  (property "Datasheet" "https://www.waveshare.com/wiki/RP2040-Zero" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))\n' +
+    '  (property "Description" "Waveshare RP2040-Zero mini board, 23 pads" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))\n' +
+    '  (symbol "RP2040-Zero_0_1"\n' +
+    '    (rectangle (start -10.16 19.05) (end 10.16 -19.05) (stroke (width 0.254) (type default)) (fill (type background)))\n' +
+    '  )\n' +
+    '  (symbol "RP2040-Zero_1_1"\n' +
+    '    (pin power_in line (at -15.24 16.51 0) (length 5.08) (name "5V" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin power_in line (at -15.24 13.97 0) (length 5.08) (name "GND" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin power_out line (at -15.24 11.43 0) (length 5.08) (name "3V3" (effects (font (size 1.27 1.27)))) (number "3" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at -15.24 6.35 0) (length 5.08) (name "GP29" (effects (font (size 1.27 1.27)))) (number "4" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at -15.24 3.81 0) (length 5.08) (name "GP28" (effects (font (size 1.27 1.27)))) (number "5" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at -15.24 1.27 0) (length 5.08) (name "GP27" (effects (font (size 1.27 1.27)))) (number "6" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at -15.24 -1.27 0) (length 5.08) (name "GP26" (effects (font (size 1.27 1.27)))) (number "7" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at -15.24 -3.81 0) (length 5.08) (name "GP15" (effects (font (size 1.27 1.27)))) (number "8" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at -15.24 -6.35 0) (length 5.08) (name "GP14" (effects (font (size 1.27 1.27)))) (number "9" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 16.51 180) (length 5.08) (name "GP0" (effects (font (size 1.27 1.27)))) (number "23" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 13.97 180) (length 5.08) (name "GP1" (effects (font (size 1.27 1.27)))) (number "22" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 11.43 180) (length 5.08) (name "GP2" (effects (font (size 1.27 1.27)))) (number "21" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 8.89 180) (length 5.08) (name "GP3" (effects (font (size 1.27 1.27)))) (number "20" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 6.35 180) (length 5.08) (name "GP4" (effects (font (size 1.27 1.27)))) (number "19" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 3.81 180) (length 5.08) (name "GP5" (effects (font (size 1.27 1.27)))) (number "18" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 1.27 180) (length 5.08) (name "GP6" (effects (font (size 1.27 1.27)))) (number "17" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 -1.27 180) (length 5.08) (name "GP7" (effects (font (size 1.27 1.27)))) (number "16" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 -3.81 180) (length 5.08) (name "GP8" (effects (font (size 1.27 1.27)))) (number "15" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 -6.35 180) (length 5.08) (name "GP9" (effects (font (size 1.27 1.27)))) (number "14" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 -8.89 180) (length 5.08) (name "GP10" (effects (font (size 1.27 1.27)))) (number "13" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 -11.43 180) (length 5.08) (name "GP11" (effects (font (size 1.27 1.27)))) (number "12" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 -13.97 180) (length 5.08) (name "GP12" (effects (font (size 1.27 1.27)))) (number "11" (effects (font (size 1.27 1.27)))))\n' +
+    '    (pin bidirectional line (at 15.24 -16.51 180) (length 5.08) (name "GP13" (effects (font (size 1.27 1.27)))) (number "10" (effects (font (size 1.27 1.27)))))\n' +
+    '  )\n' +
+    ')';
+
   const PARTS = {
     // --- passives ---
     'Device:R':   { def: passive2('R', { ref: 'R' }, R_BODY),   value: 'R',    ref: 'R', label: 'R 抵抗' },
@@ -377,6 +414,9 @@
     'Connector:Conn_01x08': { def: connector(8), value: 'Conn_01x08', ref: 'J', label: 'コネクタ 8ピン' },
     'Connector:Conn_01x10': { def: connector(10), value: 'Conn_01x10', ref: 'J', label: 'コネクタ 10ピン' },
     'Connector:TestPoint': { def: TESTPOINT_DEF, value: 'TestPoint', ref: 'TP', label: 'テストポイント' },
+    // --- modules ---
+    'MCU_Module:RP2040-Zero': { def: RP2040_ZERO_DEF, value: 'RP2040-Zero', ref: 'U',
+      label: 'RP2040-Zero (Waveshare)' },
   };
 
   // Menu order, grouped by category.
@@ -391,6 +431,7 @@
     'Connector:Conn_01x02', 'Connector:Conn_01x03', 'Connector:Conn_01x04',
     'Connector:Conn_01x05', 'Connector:Conn_01x06', 'Connector:Conn_01x08',
     'Connector:Conn_01x10', 'Connector:TestPoint',
+    'MCU_Module:RP2040-Zero',
   ];
 
   global.KiParts = { PARTS: PARTS, ORDER: ORDER };
