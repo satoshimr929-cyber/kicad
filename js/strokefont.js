@@ -155,9 +155,10 @@
       const ch = text[i];
       const g = ch === ' ' ? null : glyphFor(ch);
       if (!g) {
-        // No stroke glyph: space just advances, anything else joins a run that
-        // the caller draws with the browser font.
+        // No stroke glyph: space just advances, control characters are dropped,
+        // anything else joins a run the caller draws with the browser font.
         if (ch === ' ') { flushRun(); cursor += SPACE * s; continue; }
+        if (ch.charCodeAt(0) < 0x20) { flushRun(); continue; }
         if (!run) run = { text: '', start: cursor };
         run.text += ch;
         cursor += nativeAdvance(ch) * s;

@@ -1,0 +1,40 @@
+name: Tests
+
+# Runs the suite in tests/. Kept separate from the Pages deploy so a test run
+# never delays publishing, and so it also runs on branches and pull requests.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run unit tests
+        run: tests/run.sh unit
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Playwright and Chromium
+        run: |
+          npm i -g playwright@^1.56
+          npx --yes playwright@^1.56 install --with-deps chromium
+      - name: Install a Japanese font
+        # jptext.test.js checks that non-ASCII really reaches the canvas, which
+        # the browser draws with a system font; a bare runner has none.
+        run: sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      - name: Run end-to-end tests
+        run: tests/run.sh e2e

@@ -139,6 +139,28 @@ python3 -m http.server 8000
 | `js/app.js` | UI 制御（読み込み・パン/ズーム・選択・移動・編集・保存） |
 | `js/sample.js` | サンプル回路データ |
 | `samples/sample.kicad_sch` | サンプルの実ファイル |
+| `js/strokefont.js` | ストロークフォント描画（非 ASCII はブラウザのフォントへフォールバック） |
+| `js/fprenderer.js` / `js/fpeditor.js` | フットプリントの描画とエディタ |
+| `js/stdlib.js` | 同梱ライブラリの索引・遅延読み込み |
+| `tools/build-*-index.js` | デプロイ時のライブラリ索引生成 |
+| `custom/` / `footprints/` | 自作シンボル / フットプリント |
+| `tests/` | テスト一式（[`tests/README.md`](tests/README.md)） |
+
+## テスト
+
+```sh
+tests/run.sh          # 全部（ユニット + ブラウザ e2e）
+tests/run.sh unit     # node だけ、数秒
+tests/run.sh jptext   # パスが一致するものだけ
+```
+
+ユニットテストは node のみで動きます。e2e は Playwright + Chromium で実アプリを
+操作します（前提と各スイートの内容は [`tests/README.md`](tests/README.md)）。
+push ごとに GitHub Actions でも実行されます。
+
+公式ライブラリ（約 390MB）はコミットせずデプロイ時に取得する方針なので、テストは
+`tests/fixtures/` の小さなモックライブラリに対して**実際の索引生成スクリプトを走らせて**
+検証します。
 
 ## 制限事項 / 今後の拡張候補
 
