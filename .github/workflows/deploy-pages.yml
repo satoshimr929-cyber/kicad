@@ -60,7 +60,11 @@ jobs:
           # alongside the official ones (Custom:... in the app).
           cp -r footprints/*.pretty kicad-footprints/
           node tools/build-fp-index.js kicad-footprints _site/library
+          echo "--- what we ship ---"
           du -sh _site
+          du -sh _site/library _site/library/fp
+          echo "files in _site:        $(find _site -type f | wc -l)"
+          echo "files in _site/library: $(find _site/library -type f | wc -l)"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -90,6 +94,12 @@ jobs:
           curl -sI "$base/library/index.json" | sed -n '1,15p'
           echo "--- headers: library/Device.kicad_sym ---"
           curl -sI "$base/library/Device.kicad_sym" | sed -n '1,15p'
+          echo "--- other subdirectories (is this library-specific?) ---"
+          for path in js/strokefont.js css/style.css samples/sample.kicad_sch \
+                      manifest.webmanifest icons/icon-192.png; do
+            printf '%-32s -> %s\n' "$path" \
+              "$(curl -s -o /dev/null -w '%{http_code}' "$base/$path?ci=$RANDOM")"
+          done
           echo "--- app URL (per-deploy version query) ---"
           curl -s -o /dev/null -w "GET index.json?v=${GITHUB_SHA:0:8} -> %{http_code}\n" \
             "$base/library/index.json?v=${GITHUB_SHA:0:8}"
