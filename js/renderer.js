@@ -737,7 +737,7 @@
   // Core stroke-text drawer. opts: {size, angle, color, hjustify, vjustify, width}
   Renderer.prototype.drawStrokeText = function (text, x, y, opts) {
     if (text === '' || text == null) return;
-    const polys = global.StrokeFont.polylines(String(text), {
+    const laid = global.StrokeFont.layout(String(text), {
       x: x, y: y,
       size: opts.size || 1.27,
       angle: opts.angle || 0,
@@ -745,10 +745,12 @@
       vjustify: opts.vjustify || 'center',
     });
     const ctx = this.ctx;
-    ctx.strokeStyle = this.hl || opts.color || COLORS.text;
+    const colour = this.hl || opts.color || COLORS.text;
+    ctx.strokeStyle = colour;
     ctx.lineWidth = this.lw(opts.width || 0.12);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    const polys = laid.polys;
     for (let i = 0; i < polys.length; i++) {
       const p = polys[i];
       ctx.beginPath();
@@ -757,6 +759,29 @@
         if (j === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
       }
       ctx.stroke();
+    }
+    this.drawTextRuns(laid.runs, colour);
+  };
+
+  // Characters the stroke font has no glyph for (Japanese and the like) are
+  // drawn with the browser's own font at the same baseline and rotation.
+  Renderer.prototype.drawTextRuns = function (runs, colour) {
+    if (!runs || !runs.length) return;
+    const ctx = this.ctx;
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i];
+      const s = this.worldToScreen(r.x, r.y);
+      const px = r.size * this.view.scale;
+      if (px < 3) continue;                    // unreadable at this zoom
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      if (r.angle) ctx.rotate(-r.angle * Math.PI / 180);
+      ctx.fillStyle = colour;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.font = px + 'px "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif';
+      ctx.fillText(r.text, 0, 0);
+      ctx.restore();
     }
   };
 

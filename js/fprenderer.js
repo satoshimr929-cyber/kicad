@@ -366,7 +366,7 @@
   }
 
   FpRenderer.prototype.strokeText = function (text, x, y, size, color, angle, thick) {
-    const polys = global.StrokeFont.polylines(String(text), {
+    const laid = global.StrokeFont.layout(String(text), {
       x: x, y: y, size: size,
       angle: ((angle || 0) % 180 !== 0) ? 90 : 0,
       hjustify: 'center', vjustify: 'center',
@@ -376,6 +376,7 @@
     ctx.lineWidth = Math.max(1, (thick || size * 0.15) * this.view.scale);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    const polys = laid.polys;
     for (let i = 0; i < polys.length; i++) {
       const p = polys[i];
       ctx.beginPath();
@@ -384,6 +385,22 @@
         if (j === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
       }
       ctx.stroke();
+    }
+    // Non-ASCII (Japanese ...) falls back to the browser font.
+    for (let i = 0; i < laid.runs.length; i++) {
+      const r = laid.runs[i];
+      const s = this.worldToScreen(r.x, r.y);
+      const px = r.size * this.view.scale;
+      if (px < 3) continue;
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      if (r.angle) ctx.rotate(-r.angle * Math.PI / 180);
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.font = px + 'px "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif';
+      ctx.fillText(r.text, 0, 0);
+      ctx.restore();
     }
   };
 
